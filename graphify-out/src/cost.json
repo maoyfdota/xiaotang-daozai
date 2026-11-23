@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "date": "2026-11-19T13:05:56.427870+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 118,
+      "mode": "AST-only",
+      "root": "/Users/maoyufeng/RustStudy/xiaotang-daozai/src",
+      "built_at_commit": "08250c583dfda4fe3643af9e27cc93221b4170e9"
+    }
+  ],
+  "total_input_tokens": 0,
+  "total_output_tokens": 0,
+  "note": "Standalone AST extraction has no LLM token charge. Current-session analysis and labeling tokens are not available in this tracker."
+}

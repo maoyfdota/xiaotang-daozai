@@ -1,0 +1,14 @@
+{
+ "runs": [
+  {
+   "date": "2026-11-18T14:15:07.773575+00:00",
+   "input_tokens": 3217480,
+   "output_tokens": 12876,
+   "cached_input_tokens": 2703104,
+   "files": 366,
+   "usage_source": "Codex semantic worker session counters (cached input included)"
+  }
+ ],
+ "total_input_tokens": 3217480,
+ "total_output_tokens": 12876
+}

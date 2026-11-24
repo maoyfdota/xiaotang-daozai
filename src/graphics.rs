@@ -1,10 +1,10 @@
-//! OpenGL 初始化失败时使用独立的图形后端。
+//! 按平台选择原生图形后端，并在初始化失败时尝试兼容后端。
 //!
 //! 典型场景：笔记本接扩展坞 / DisplayLink 外接屏、远程桌面、显卡驱动缺失时，窗口所在的显示设备
 //! 只有 Windows 自带的 OpenGL 1.1（GDI Generic），egui_glow 报「requires OpenGL 2.0+」。
-//! 这时改用 Direct3D 12 重新启动，不需要用户拔扩展坞。
+//! Windows 在这时改用 Direct3D 12 重新启动；macOS 以 Metal 为主并保留 OpenGL 回退。
 
-/// 兼容图形后端（低功耗显卡优先）：指定 Direct3D 12 或 Vulkan。
+/// Windows 兼容图形后端（低功耗显卡优先）：指定 Direct3D 12 或 Vulkan。
 fn compatible(mut options:eframe::NativeOptions,backends:eframe::wgpu::Backends)->eframe::NativeOptions {
     options.renderer=eframe::Renderer::Wgpu;
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup)=&mut options.wgpu_options.wgpu_setup {
@@ -34,6 +34,23 @@ fn launch_compatible(options:eframe::NativeOptions,launch:&mut impl FnMut(eframe
     }
 }
 
+/// macOS 使用 Metal 优先，Metal 初始化失败后再退回 OpenGL。
+fn launch_macos(options:eframe::NativeOptions,mut launch:impl FnMut(eframe::NativeOptions)->eframe::Result<()>)->eframe::Result<()> {
+    let mut metal=options.clone();
+    metal.renderer=eframe::Renderer::Wgpu;
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup)=&mut metal.wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends=eframe::wgpu::Backends::METAL;
+        setup.power_preference=eframe::wgpu::PowerPreference::LowPower;
+    }
+    let error=match launch(metal) {
+        Err(error @ eframe::Error::Wgpu(_))=>error,
+        result=>return result,
+    };
+    launch(opengl(options)).map_err(|fallback|eframe::Error::AppCreation(format!(
+        "Metal 初始化失败：{error}\nOpenGL 也无法启动：{fallback}\n请更新 macOS 并重启岛仔后重试。"
+    ).into()))
+}
+
 /// 验收与排障：设置环境变量 `DAOZAI_RENDERER=wgpu` 直接使用兼容图形后端，
 /// 在正常电脑上也能检查 OpenGL 失败后用户会看到的画面。
 fn forced_compatible()->bool {
@@ -41,9 +58,14 @@ fn forced_compatible()->bool {
 }
 
 pub fn run(options:eframe::NativeOptions,launch:impl FnMut(eframe::NativeOptions)->eframe::Result<()>)->eframe::Result<()> {
+    #[cfg(target_os="macos")]
+    {return launch_macos(options,launch);}
+    #[cfg(not(target_os="macos"))]
+    {
     // 上次崩在显卡 OpenGL 驱动里时，崩溃处理留下的标记会在这里转成设置。
     let _=daozai::renderer::apply_pending_fallback();
     run_with(forced_compatible() || daozai::renderer::compat_requested(),options,launch)
+    }
 }
 
 fn opengl(mut options:eframe::NativeOptions)->eframe::NativeOptions { options.renderer=eframe::Renderer::Glow; options }
@@ -121,6 +143,30 @@ mod tests {
     fn application_errors_do_not_restart_the_application(){
         let mut attempts=0;
         assert!(run_with(false,eframe::NativeOptions::default(),|_|{
+            attempts+=1;Err(eframe::Error::AppCreation("应用初始化失败".into()))
+        }).is_err());
+        assert_eq!(attempts,1);
+    }
+
+    #[test]
+    fn macos_renderer_uses_metal_then_glow_fallback(){
+        let mut renderers=Vec::new();
+        let result=launch_macos(eframe::NativeOptions::default(),|options|{
+            renderers.push(options.renderer);
+            if options.renderer==eframe::Renderer::Wgpu {
+                let eframe::egui_wgpu::WgpuSetup::CreateNew(setup)=options.wgpu_options.wgpu_setup else{panic!("应创建 Metal 图形设备")};
+                assert_eq!(setup.instance_descriptor.backends,eframe::wgpu::Backends::METAL);
+                Err(no_adapter())
+            } else {Ok(())}
+        });
+        assert!(result.is_ok());
+        assert_eq!(renderers,[eframe::Renderer::Wgpu,eframe::Renderer::Glow]);
+    }
+
+    #[test]
+    fn macos_application_errors_do_not_restart_with_glow(){
+        let mut attempts=0;
+        assert!(launch_macos(eframe::NativeOptions::default(),|_|{
             attempts+=1;Err(eframe::Error::AppCreation("应用初始化失败".into()))
         }).is_err());
         assert_eq!(attempts,1);

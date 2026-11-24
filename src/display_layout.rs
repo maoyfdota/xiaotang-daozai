@@ -210,16 +210,18 @@ mod side_tests {
     use crate::model::Dock;
     #[test]
     fn side_canvas_hugs_the_edge_and_keeps_the_panel_on_screen(){
-        for (m,scale) in [(Bounds{left:0,top:0,right:1920,bottom:1080},1.0),(Bounds{left:-2560,top:-400,right:0,bottom:1040},1.5)] {
+        for (m,scale) in [(Bounds{left:0,top:0,right:1920,bottom:1080},1.0),(Bounds{left:-2560,top:-400,right:0,bottom:1040},1.5),(Bounds{left:0,top:0,right:3360,bottom:2100},2.0)] {
             let canvas=(500.0,600.0);
             let (x,_)=side_origin(m,Dock::Left,canvas,150.0,scale,0.0).unwrap();assert_eq!(x,m.left);
-            let (x,_)=side_origin(m,Dock::Right,canvas,150.0,scale,0.0).unwrap();assert_eq!(x+(500.0*scale) as i32,m.right);
+            let (x,y)=side_origin(m,Dock::Right,canvas,150.0,scale,0.0).unwrap();
+            assert_eq!(x+(500.0*scale) as i32,m.right);
+            assert_eq!(y as f64+300.0*scale as f64,(m.top+m.bottom) as f64/2.0);
             for offset in [-1.0,0.0,1.0,7.0] {
                 let (_,y)=side_origin(m,Dock::Left,canvas,150.0,scale,offset).unwrap();
                 let cy=y as f64+300.0*scale as f64;
                 assert!(cy-150.0*scale as f64>=m.top as f64-1.0 && cy+150.0*scale as f64<=m.bottom as f64+1.0,"{m:?} {offset}");
             }
-            let (_,center)=side_origin(m,Dock::Left,canvas,150.0,scale,0.0).unwrap();
+            let (_,center)=side_origin(m,Dock::Right,canvas,150.0,scale,0.0).unwrap();
             assert_eq!(center as f64+300.0*scale as f64,(m.top+m.bottom) as f64/2.0);
         }
         assert!(side_origin(Bounds{left:0,top:0,right:0,bottom:0},Dock::Left,(500.0,600.0),150.0,1.0,0.0).is_none());

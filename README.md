@@ -10,6 +10,7 @@ Windows 桌面伙伴，把消息、音乐、日程、天气和 AI 额度放到�
 
 [![最新版本](https://img.shields.io/github/v/release/Renly1994/xiaotang-daozai?color=7955b8&label=最新版本)](https://github.com/Renly1994/xiaotang-daozai/releases/latest)
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4)](#下载安装)
+[![macOS](https://img.shields.io/badge/macOS-11%2B%20Apple%20Silicon-000000)](#macos-support)
 [![开源许可](https://img.shields.io/badge/License-MIT-3cbf91)](LICENSE)
 [![Rust 与 egui](https://img.shields.io/badge/Rust-egui-8b6ca8)](#从源码构建与参与开发)
 
@@ -136,9 +137,28 @@ Windows 桌面伙伴，把消息、音乐、日程、天气和 AI 额度放到�
 
 **更新**：设置 → 关于 → 检查更新。支持应用内下载、校验后重启更新，也可从发布页下载覆盖安装；升级保留原设置和数据，卸载同样保留用户数据。下载窗口提供夸克网盘备用入口。
 
-**系统**：Windows 10／11 x64。默认使用 OpenGL，初始化失败时自动尝试 Direct3D 12。Windows 11 已进行本机实测，Windows 10、不同显卡及多屏组合仍需更多反馈。暂不提供 macOS、Linux 或 ARM64 成品包。
+**系统**：Windows 10／11 x64 和 Apple Silicon Mac（macOS 11+）。Windows 默认使用 OpenGL，初始化失败时自动尝试 Direct3D 12。Windows 11 与当前 macOS 开发机已进行本机实测，其他版本与多屏组合仍需更多反馈。暂不提供 Linux 或 Intel Mac 成品包。
 
 当前程序未做商业代码签名，Windows 可能提示未知发布者；请核对仓库来源与文件校验值。更多操作见 [使用指南](docs/USAGE.md)。
+
+<a id="macos-support"></a>
+
+## macOS 首期支持
+
+Mac 版面向 Apple Silicon（arm64）并以 macOS 11 为最低系统版本，悬浮岛默认停靠屏幕右侧并垂直居中。首期提供专注、饮水／久坐、待办和 Open-Meteo 天气，以及本机设置与内容保存。音乐、置物架、邮箱、AI 额度、远程日历、系统通知、蓝牙、开机启动、前台窗口避让、和风天气等暂缓功能在 Mac 版隐藏。
+
+Mac 数据默认保存在 `~/Library/Application Support/Daozai`，也可用 `DAOZAI_DATA_DIR` 指定其他目录。当前 `.app` 包用于本机验证，尚未签名或公证，不作为公开下载包。
+
+在 Apple Silicon Mac 安装 Rust stable、Xcode Command Line Tools 和 `aarch64-apple-darwin` target 后，可从源码构建并打包：
+
+```bash
+rustup target add aarch64-apple-darwin
+MACOSX_DEPLOYMENT_TARGET=11.0 cargo check --locked --bin daozai --target aarch64-apple-darwin
+bash scripts/package-macos.sh
+open target/aarch64-apple-darwin/release/Daozai.app
+```
+
+打包脚本会构建 arm64 release binary，并在 Cargo release 目录生成 Finder 可启动的 `Daozai.app`。
 
 <details>
 <summary><b>连接服务之前，需要准备什么？</b></summary>
@@ -157,6 +177,7 @@ QQ 收信、邮件日程和飞书个人日历已进行真实账号测试。其�
 <summary><b>数据与隐私</b></summary>
 
 - 设置、待办、本机日程、饮水记录、剪贴板历史、置物路径与连接元数据保存在 `%APPDATA%\Daozai`。
+- Mac 上的设置和本机内容保存在 `~/Library/Application Support/Daozai`；`DAOZAI_DATA_DIR` 可覆盖默认路径。
 - 邮箱和日历密码、DeepSeek API Key 保存在 Windows 凭据管理器；独立 Gemini、WorkBuddy 会话使用 Windows DPAPI 加密。
 - 微信新消息提醒根据任务栏闪动工作，不读取联系人或聊天正文；QQ 与应用通知需要相应的系统通知权限。
 - 读取已有 AI 客户端登录时不回写原客户端配置。不要把授权码、Cookie、API Key 或登录 JSON 上传到 Issue。

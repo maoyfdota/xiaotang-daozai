@@ -265,6 +265,7 @@ impl App {
         self.quota.doubao_connecting=None;self.quota.doubao_cookie.clear();
     }
     pub(crate) fn quota_tick(&mut self){
+        if !crate::platform::page_available(crate::app::QUOTA_PAGE){return;}
         if (!self.settings_open||!self.quota.connect_open)&&self.quota.gemini_connecting.is_some(){self.quota.gemini_connecting=None;self.quota.gemini_cookie.clear();}
         if (!self.settings_open||!self.quota.connect_open)&&self.quota.doubao_connecting.is_some(){self.quota_close_connection();}
         if !self.settings_open && self.quota.api_connecting.is_some(){self.quota_close_connection();}
@@ -350,12 +351,12 @@ impl App {
         self.quota.note.clear();self.quota.kiro_connecting=Some(quota::kiro::Connect::start(path,self.quota.alias.clone(),target));
     }
     pub fn quota_config(&self)->&Config{&self.quota.config}
-    pub fn quota_initialize(&mut self){if !crate::model::config_dir().join("ai-quota.json").exists(){self.quota.config.discover();self.quota.config.save();}}
+    pub fn quota_initialize(&mut self){if !crate::platform::page_available(crate::app::QUOTA_PAGE){return;}if !crate::model::config_dir().join("ai-quota.json").exists(){self.quota.config.discover();self.quota.config.save();}}
     pub fn quota_pending(&mut self,accounts:&[Account]){self.quota.busy.extend(accounts.iter().map(|a|a.id.clone()));}
     pub fn quota_event(&mut self,event:quota::Event){self.quota.receive(event);}
-    pub fn quota_set_source(&mut self,path:std::path::PathBuf){self.quota.source=path.to_string_lossy().into_owned();}
+    pub fn quota_set_source(&mut self,path:std::path::PathBuf){if crate::platform::page_available(crate::app::QUOTA_PAGE){self.quota.source=path.to_string_lossy().into_owned();}}
     pub(crate) fn quota_bar_indices(&self)->Vec<usize>{
-        if !self.quota.config.enabled || !self.quota.config.compact || !self.settings.visible_pages[6] || self.settings.minimal || self.t<self.notification_bell_until{return vec![];}
+        if !self.module_on(crate::app::QUOTA_PAGE) || !self.quota.config.enabled || !self.quota.config.compact || self.settings.minimal || self.t<self.notification_bell_until{return vec![];}
         self.quota.config.pinned_indices()
     }
     /// 常驻胶囊里每个额度槽的实际宽度：图标右侧跟数字的账号需要额外占位。
@@ -869,6 +870,7 @@ impl App {
     }
     #[cfg(feature="record")]
     pub fn quota_demo(&mut self,mode:&str){
+        if !crate::platform::page_available(crate::app::QUOTA_PAGE){return;}
         use serde_json::json;
         self.quota=State::default();let reset=chrono::Utc::now().timestamp()+8200;
         for(i,(provider,alias))in [(Provider::Codex,"个人"),(Provider::Codex,"工作"),(Provider::Claude,"Claude")].into_iter().enumerate(){let id=format!("demo-{i}");self.quota.config.accounts.push(Account{id:id.clone(),provider,alias:alias.into(),source:format!("demo-{i}.json").into(),slot:None,enabled:true,pinned:mode=="multi" || i==0});let payload=if provider==Provider::Codex{json!({"plan_type":if i==0{"pro"}else{"plus"},"rate_limit":{"primary_window":if mode=="single" && i==0{serde_json::Value::Null}else{json!({"used_percent":28+i*15,"limit_window_seconds":18000,"reset_at":reset})},"secondary_window":{"used_percent":56,"limit_window_seconds":604800,"reset_at":reset+200000}}})}else{json!({"five_hour":{"utilization":45,"resets_at":"2030-01-01T12:00:00Z"},"seven_day":{"utilization":27}})};self.quota.rows.insert(id,quota::parse(provider,&payload));}

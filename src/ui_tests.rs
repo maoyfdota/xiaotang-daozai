@@ -90,7 +90,15 @@ fn weather_content_tap_keeps_other_controls_independent(){
         h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,..Default::default()});
         h.app.show_page(8);h.hover(H::local(250.0,65.0),1.0);h.click(H::local(x,y));
         assert!(!h.app.weather.solar_open,"操作 ({x},{y}) 不应触发日照切换");
-        assert_eq!(h.app.page(),target,"操作 ({x},{y}) 的页面跳转应保持不变");
+        let available=h.app.settings.page_order.iter().copied().filter(|page|h.app.module_on(*page)).collect::<Vec<_>>();
+        let position=available.iter().position(|page|*page==crate::app::WEATHER_PAGE).unwrap();
+        let next=available[(position+1)%available.len()];
+        let previous=available[(position+available.len()-1)%available.len()];
+        let expected=if x==367.0&&!crate::platform::page_available(crate::app::MUSIC_PAGE){8}
+            else if x==398.0&&y==88.0 {next}
+            else if x==20.0&&y==88.0 {previous}
+            else {target};
+        assert_eq!(h.app.page(),expected,"操作 ({x},{y}) 的页面跳转应保持不变");
         if y>200.0 {assert!(h.cmds.contains(&crate::app::Cmd::OpenUrl("https://open-meteo.com/".into())));}
         if x==394.0 {assert!(h.app.settings_open);}
     }
@@ -429,7 +437,8 @@ fn weather_cities_switch_from_the_island_title_and_keep_their_own_cache(){
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains(phrase))),"下拉框缺少 {phrase}");
     }
     let row=h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t)if t.galley.text()=="杭州"=>Some(t.visual_bounding_rect().center()),_=>None}).unwrap();
-    h.click(row);h.hover(row,0.3);
+    if cfg!(target_os="macos") {click_side_canvas(&mut h,row);} else {h.click(row);}
+    h.hover(row,0.3);
     assert_eq!(h.app.settings.weather_city,"杭州");assert!(!h.app.weather.picker_open);assert!(!h.app.weather.solar_open);
     assert!(h.app.weather.snapshot.is_none(),"杭州没有缓存时不能显示北京的天气");
     // 点面板外收起，不触发日照视图。
@@ -496,7 +505,12 @@ fn weather_refresh_keeps_music_and_settings_shortcuts_separate(){
     h.app.show_page(8);h.hover(H::local(300.0,60.0),1.0);
     let rect=|name|h.ctx.read_response(egui::Id::new(("card",true,name))).unwrap().rect;
     let refresh=rect("weather-refresh");
-    assert!(!refresh.intersects(rect("header-music")));
+    if crate::platform::page_available(crate::app::MUSIC_PAGE) {
+        assert!(!refresh.intersects(rect("header-music")));
+    } else {
+        assert!(h.ctx.read_response(egui::Id::new(("card",true,"header-music"))).is_none(),
+            "Mac 首期隐藏音乐快捷入口");
+    }
     assert!(!refresh.intersects(rect("page-settings")));
 }
 
@@ -1006,6 +1020,7 @@ fn settings_keep_dark_buttons_when_system_theme_changes() {
 fn expanded_settings_routes_preserve_inline_controls(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for (page,tab) in crate::app::PAGE_SETTINGS_TABS.into_iter().enumerate(){
+        if !crate::platform::page_available(page) {continue;}
         let mut h=H::new();h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
         h.click(H::local(394.0,18.0));
         assert!(h.app.settings_open,"页面 {page} 应打开设置窗口");
@@ -1018,11 +1033,15 @@ fn expanded_settings_routes_preserve_inline_controls(){
         h.click(H::local(394.0,18.0));assert!(h.app.settings_open);
         assert_eq!(h.app.subpage,Some(page),"打开完整设置后应保留岛内调整页");
     }
-    let mut h=H::new();h.app.show_page(3);h.hover(H::local(200.0,40.0),1.0);
-    h.click(H::local(330.0,18.0));assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::AddFiles)));
-    assert!(!h.app.settings_open);
-    h.app.show_page(6);h.hover(H::local(200.0,40.0),1.0);h.click(H::local(319.0,18.0));
-    assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::QuotaRefresh)));assert!(!h.app.settings_open);
+    if crate::platform::page_available(3) {
+        let mut h=H::new();h.app.show_page(3);h.hover(H::local(200.0,40.0),1.0);
+        h.click(H::local(330.0,18.0));assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::AddFiles)));
+        assert!(!h.app.settings_open);
+    }
+    if crate::platform::page_available(6) {
+        let mut h=H::new();h.app.show_page(6);h.hover(H::local(200.0,40.0),1.0);h.click(H::local(319.0,18.0));
+        assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::QuotaRefresh)));assert!(!h.app.settings_open);
+    }
 }
 
 #[test]
@@ -1142,6 +1161,8 @@ fn oled_shift_pauses_on_the_first_pointer_press_frame() {
 }
 
 #[test]
+// Mac 固定右侧布局不移动窗口位置来实现 OLED 横向偏移。
+#[cfg(not(target_os = "macos"))]
 fn oled_shift_waits_for_side_panels_to_finish_closing() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for dock in [crate::model::Dock::Left,crate::model::Dock::Right] {
@@ -1189,10 +1210,87 @@ impl H {
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
         Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,page_transition:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
     }
+    fn macos_pointer(&self, point: Pos2) -> Pos2 {
+        if !cfg!(target_os = "macos") {
+            return point;
+        }
+
+        let side_left = crate::side_dock::SIDE_W - PW;
+        let side_local_top = crate::side_dock::SIDE_H / 2.0 - PH / 2.0;
+        let side_canvas = Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(crate::side_dock::SIDE_W, crate::side_dock::SIDE_H),
+        );
+        let side_origin = self.app.content_origin(side_canvas);
+        let local_panel = Rect::from_min_max(
+            Pos2::new(side_left, side_local_top),
+            Pos2::new(crate::side_dock::SIDE_W, crate::side_dock::SIDE_H),
+        );
+        if local_panel.contains(point) {
+            return Pos2::new(
+                side_origin.x + point.x - side_left,
+                side_origin.y + point.y - side_local_top,
+            );
+        }
+
+        let top_left = (WIN_W - PW) / 2.0;
+        let legacy_panel = Rect::from_min_size(
+            Pos2::new(top_left, 0.0),
+            Vec2::new(PW, WIN_H),
+        );
+        if self.app.open && legacy_panel.contains(point) {
+            return Pos2::new(
+                side_origin.x + point.x - top_left,
+                side_origin.y + point.y,
+            );
+        }
+
+        if !self.app.open
+            && point.y <= crate::app::BAR_H
+            && (top_left..=top_left + PW).contains(&point.x)
+        {
+            return Pos2::new(
+                crate::side_dock::SIDE_W - crate::side_dock::SIDE_BAR_W / 2.0,
+                crate::side_dock::SIDE_H / 2.0,
+            );
+        }
+
+        if Rect::from_min_size(Pos2::ZERO, Vec2::new(WIN_W, WIN_H)).contains(point) {
+            return Pos2::new(20.0, crate::side_dock::SIDE_H / 2.0);
+        }
+
+        point
+    }
     fn frame(&mut self, events: Vec<egui::Event>) {
+        let (width, height) = if self.app.side() {
+            (crate::side_dock::SIDE_W, crate::side_dock::SIDE_H)
+        } else {
+            (WIN_W, WIN_H)
+        };
+        let events = events
+            .into_iter()
+            .map(|event| match event {
+                egui::Event::PointerMoved(pos) => {
+                    egui::Event::PointerMoved(self.macos_pointer(pos))
+                }
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers,
+                } => egui::Event::PointerButton {
+                    pos: self.macos_pointer(pos),
+                    button,
+                    pressed,
+                    modifiers,
+                },
+                event => event,
+            })
+            .collect();
+        let cursor = self.cursor.map(|point| self.macos_pointer(point));
         self.t += 1.0 / 60.0;
         let mut raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(crate::app::CANVAS_W, WIN_H))),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height))),
             time: Some(self.t),
             events,
             hovered_files:self.hovered_files.clone(),
@@ -1206,7 +1304,7 @@ impl H {
             clock: "09:41:00".into(),
             today: "2026-10-28".into(),
             date: "10月28日 周三".into(),
-            cursor: self.cursor,
+            cursor,
             bt: self.bt.clone(),
             bt_ready: true,
             media:self.media.clone(),
@@ -1228,7 +1326,7 @@ impl H {
         let file_drop_zone=&mut self.file_drop_zone;
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx, |ui| {
-                let win = Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H));
+                let win = Rect::from_min_size(ui.max_rect().min,Vec2::new(width,height));
                 let frame=app.frame(ui, win, &env);*region=frame.region;*hit=frame.hit;*animating=frame.animating;*page_transition=frame.page_transition;*file_drop_zone=frame.file_drop_zone;cmds.extend(frame.cmds);
             });
         });
@@ -1271,7 +1369,15 @@ impl H {
         for pressed in [true,false]{self.picker_frame(vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);}
     }
     fn local(x: f32, y: f32) -> Pos2 {
-        Pos2::new((WIN_W - PW) / 2.0 + x, y)
+        let (left, top) = if cfg!(target_os = "macos") {
+            (
+                crate::side_dock::SIDE_W - PW,
+                crate::side_dock::SIDE_H / 2.0 - PH / 2.0,
+            )
+        } else {
+            ((WIN_W - PW) / 2.0, 0.0)
+        };
+        Pos2::new(left + x, top + y)
     }
     fn quota_accounts(&mut self,count:usize) {
         use crate::quota::{Account,Provider,Snapshot,Window};
@@ -1802,6 +1908,8 @@ fn music_volume_popup_slider_unmutes_and_scrolls_without_changing_pages(){
 }
 
 #[test]
+// 音乐控制页及播放器音量接口不属于 Mac 首期。
+#[cfg(not(target_os = "macos"))]
 fn music_volume_popup_closes_on_escape_outside_click_source_change_and_collapse(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.media=crate::smtc::NowPlaying{source:"QQMusic.exe".into(),title:"Track".into(),artist:"Artist".into(),volume:Some((60,false)),..Default::default()};
@@ -2509,6 +2617,7 @@ fn minimal_hover_does_not_catch_tabs_during_collapse() {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn music_header_shortcut_returns_from_every_page_without_controlling_playback() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for playing in [true,false] {
@@ -2525,6 +2634,7 @@ fn music_header_shortcut_returns_from_every_page_without_controlling_playback() 
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn music_header_shortcut_keeps_hidden_music_page_disabled() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,duration:120.0,..Default::default()};
@@ -2532,6 +2642,23 @@ fn music_header_shortcut_keeps_hidden_music_page_disabled() {
     h.click(H::local(367.0,18.0));
     assert_eq!(h.app.page,4);assert!(!h.app.settings.visible_pages[0]);
     assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,1);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn unavailable_music_controls_stay_hidden_when_media_data_exists() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
+    h.app.show_page(crate::app::WEATHER_PAGE);
+    h.hover(H::local(250.0,65.0),1.0);
+    assert!(h.ctx.read_response(egui::Id::new(("card",true,"header-music"))).is_none(),"平台隐藏音乐页时不能绘制可点击的音乐捷径");
+    assert!(!h.app.side_items().contains(&crate::side_dock::SideItem::Music),"右侧收起岛不能显示隐藏的音乐状态");
+    h.click(H::local(367.0,18.0));
+    assert_eq!(h.app.page(),crate::app::WEATHER_PAGE);
+    assert!(!h.app.settings_open);
+    h.click(H::local(394.0,18.0));
+    assert!(h.app.settings_open,"隐藏音乐捷径不能影响设置按钮");
 }
 
 #[test]
@@ -2549,16 +2676,21 @@ fn arrows_and_dots_switch_pages() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = H::new();
     h.hover(Pos2::new(WIN_W / 2.0, 12.0), 1.0);
+    let available=h.app.settings.page_order.iter().copied().filter(|page|h.app.module_on(*page)).collect::<Vec<_>>();
+    let current=h.app.page();
+    let position=available.iter().position(|page|*page==current).unwrap();
+    let next=available[(position+1)%available.len()];
+    let after_next=available[(position+2)%available.len()];
     h.click(H::local(398.0, 68.0));
-    assert_eq!(h.app.page, 1);
+    assert_eq!(h.app.page, next);
     h.hover(H::local(300.0, 60.0), 0.8);
     h.click(H::local(21.0, 68.0));
-    assert_eq!(h.app.page, 0);
+    assert_eq!(h.app.page, current);
     h.hover(H::local(300.0, 60.0), 0.8);
     h.click(H::local(398.0, 68.0));
     h.hover(H::local(300.0, 60.0), 0.8);
     h.click(H::local(398.0, 68.0));
-    assert_eq!(h.app.page, 2);
+    assert_eq!(h.app.page, after_next);
 }
 
 #[test]
@@ -2567,16 +2699,22 @@ fn wheel_navigation_reaches_every_page_in_both_directions(){
     h.app.shelf.items.clear();h.app.todos.items.clear();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     h.hover(H::local(210.0,18.0),0.3);
-    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,0]),(40.0,[8,7,6,5,4,3,2,1,0])] {
-        for page in pages {
-            h.wheel(delta);
-            assert_eq!(h.app.page,page,"滚轮翻页不能被空的置物架或待办卡住");
-            h.hover(H::local(210.0,18.0),0.25);
-        }
+    let pages=h.app.settings.page_order.iter().copied().filter(|page|h.app.module_on(*page)).collect::<Vec<_>>();
+    let start=pages.iter().position(|page|*page==h.app.page()).unwrap();
+    for offset in 1..=pages.len() {
+        h.wheel(-40.0);
+        assert_eq!(h.app.page,pages[(start+offset)%pages.len()],"滚轮翻页应遍历每个可用页面，并跳过隐藏功能");
+        h.hover(H::local(210.0,18.0),0.25);
+    }
+    for offset in 1..=pages.len() {
+        h.wheel(40.0);
+        assert_eq!(h.app.page,pages[(start+pages.len()-offset%pages.len())%pages.len()],"反向滚轮翻页应遍历每个可用页面，并跳过隐藏功能");
+        h.hover(H::local(210.0,18.0),0.25);
     }
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn wheel_from_tall_page_allows_movement_in_previous_page_bounds() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
@@ -2613,6 +2751,7 @@ fn wheel_from_tall_page_allows_movement_in_previous_page_bounds() {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn side_docks_keep_both_edges_when_turning_to_a_shorter_page() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for dock in [crate::model::Dock::Left,crate::model::Dock::Right] {
@@ -2648,19 +2787,26 @@ fn wheel_scrolls_lists_only_inside_content_and_respects_edges(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.todos.items=(0..4).map(|i|crate::model::TodoItem{text:format!("任务 {i}"),done_on:None,due:None,reminded:false,..Default::default()}).collect();
     h.app.shelf.items=(0..6).map(|i|std::path::PathBuf::from(format!("scroll-test-{i}.txt"))).collect();
-    for page in [3,4] {
+    let pages=if cfg!(target_os="macos"){vec![4]}else{vec![3,4]};
+    for page in pages {
         h.app.show_page(page);h.hover(H::local(300.0,60.0),1.0);
         h.wheel(-40.0);
         assert_eq!(h.app.page,page,"有更多内容时应先滚动列表");
         assert_eq!(if page==3 {h.app.shelf_first}else{h.app.todo_first},1);
         h.hover(H::local(300.0,60.0),0.25);h.wheel(-40.0);
         assert_eq!(h.app.page,page,"内容溢出时滚到底也应留在本页");
-        h.app.show_page(page);h.hover(H::local(210.0,18.0),0.3);h.wheel(-40.0);
-        assert_eq!(h.app.page,page+1,"顶栏滚轮不应被内容列表拦截");
+        h.app.show_page(page);
+        let order=&h.app.settings.page_order;
+        let position=order.iter().position(|candidate|*candidate==page).unwrap();
+        let expected=order.iter().cycle().skip(position+1).take(order.len())
+            .copied().find(|candidate|h.app.module_on(*candidate)).unwrap();
+        h.hover(H::local(210.0,18.0),0.3);h.wheel(-40.0);
+        assert_eq!(h.app.page,expected,"顶栏滚轮应跳过平台隐藏页面");
     }
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn wheel_overflowing_shelf_stays_at_both_edges(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     for count in [6,9]{
@@ -2697,7 +2843,11 @@ fn wheel_overflowing_todos_stay_at_both_edges(){
             assert_eq!(h.app.page,4,"待办溢出后滚动到首尾都不应翻页，条数 {count}");
             assert_eq!(h.app.todo_first,first);
         }
-        for (delta,page) in [(-40.0,5),(40.0,3)]{
+        let available=h.app.settings.page_order.iter().copied().filter(|page|h.app.module_on(*page)).collect::<Vec<_>>();
+        let position=available.iter().position(|page|*page==4).unwrap();
+        let next=available[(position+1)%available.len()];
+        let previous=available[(position+available.len()-1)%available.len()];
+        for (delta,page) in [(-40.0,next),(40.0,previous)]{
             h.app.show_page(4);h.hover(H::local(100.0,60.0),0.3);h.wheel(delta);
             assert_eq!(h.app.page,page,"待办列表外仍应允许滚轮翻页");
         }
@@ -2705,6 +2855,7 @@ fn wheel_overflowing_todos_stay_at_both_edges(){
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn wheel_clipboard_stays_at_both_edges() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
@@ -2733,8 +2884,11 @@ fn wheel_page_transition_keeps_interactive_frames_after_input_stops() {
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     h.hover(H::local(210.0,18.0),0.3);
     assert!(!h.page_transition);
+    let available=h.app.settings.page_order.iter().copied().filter(|page|h.app.module_on(*page)).collect::<Vec<_>>();
+    let position=available.iter().position(|page|*page==h.app.page()).unwrap();
+    let next=available[(position+1)%available.len()];
     h.wheel(-40.0);
-    assert_eq!(h.app.page,1);
+    assert_eq!(h.app.page,next);
     assert!(h.page_transition);
     for _ in 0..18 {
         h.frame(vec![]);
@@ -2748,14 +2902,19 @@ fn wheel_page_transition_keeps_interactive_frames_after_input_stops() {
 fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.hover(H::local(210.0,18.0),0.3);
+    let available=h.app.settings.page_order.iter().copied().filter(|page|h.app.module_on(*page)).collect::<Vec<_>>();
+    let position=available.iter().position(|page|*page==h.app.page()).unwrap();
+    let next=available[(position+1)%available.len()];
+    let after_next=available[(position+2)%available.len()];
     for _ in 0..16 {h.wheel(-0.5);}
-    assert_eq!(h.app.page,1,"高精度滚轮的小幅输入应能累积成一次翻页");
+    assert_eq!(h.app.page,next,"高精度滚轮的小幅输入应能累积成一次翻页");
     h.hover(H::local(210.0,18.0),0.3);
     for _ in 0..5 {h.wheel(-40.0);}
-    assert_eq!(h.app.page,2,"一次连续滚动不能瞬间跳过多个页面");
+    assert_eq!(h.app.page,after_next,"一次连续滚动不能瞬间跳过多个页面");
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn navigation_wraps_between_nine_pages_and_notification_settings_remain_accessible() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,8);
@@ -2850,6 +3009,8 @@ fn resident_layout_gallery(){
 }
 
 #[test]
+// Mac 首期隐藏 AI 额度页面与额度服务。
+#[cfg(not(target_os = "macos"))]
 fn quota_text_stays_inside_the_inner_ring_at_zero_and_full_usage() {
     use crate::quota::{Event,Snapshot,Window};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
@@ -3263,12 +3424,22 @@ fn page_visibility_is_saved_and_sets_the_starting_page() {
     h.app.settings.show_battery=false;
     h.app.set_page_visible(0,false);
     h.app.set_page_visible(3,false);
+    if cfg!(target_os="macos") {
+        assert_eq!(h.app.settings.visible_pages,[true;9],"首期隐藏页的历史可见性保留在设置中");
+        h.app.set_page_visible(1,false);
+        h.app.set_page_visible(4,false);
+    }
     h.app.settings.save();
     let settings=crate::model::Settings::load();
     assert!(!settings.show_battery);
-    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true]);
+    let expected=if cfg!(target_os="macos") {
+        [true,false,true,true,false,true,true,true,true]
+    }else{
+        [false,true,true,false,true,true,true,true,true]
+    };
+    assert_eq!(settings.visible_pages,expected);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
-    assert_eq!(restarted.page(),1);
+    assert_eq!(restarted.page(),if cfg!(target_os="macos"){2}else{1});
     assert_eq!(restarted.settings.visible_pages,settings.visible_pages);
     assert!(!restarted.settings.show_battery);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=000000\n").unwrap();
@@ -3313,6 +3484,24 @@ fn battery_module_can_disable_only_the_power_warning() {
 }
 
 #[test]
+fn initial_and_direct_page_navigation_respect_platform_capabilities() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let first_available=(0..crate::app::PAGE_NAMES.len()).find(|page|crate::platform::page_available(*page)).unwrap();
+    assert_eq!(h.app.page,first_available,"保存顺序从平台隐藏页面开始时，应落到第一个可用页面");
+    for page in 0..crate::app::PAGE_NAMES.len() {
+        if crate::platform::page_available(page){continue;}
+        let current=h.app.page;
+        let stored_visibility=h.app.settings.visible_pages[page];
+        h.app.show_page(page);
+        assert_eq!(h.app.page,current,"不可用页面请求不能改变当前页面");
+        assert_eq!(h.app.settings.visible_pages[page],stored_visibility,"隐藏页配置应原样保留");
+        assert!(!h.app.module_on(page),"陈旧的已启用开关不能启动隐藏模块");
+    }
+}
+
+#[test]
+#[cfg(not(target_os = "macos"))]
 fn page_visibility_skips_hidden_pages_in_every_navigation_control() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
@@ -3343,8 +3532,20 @@ fn page_visibility_moves_away_from_hidden_page_and_keeps_one_page() {
     h.app.go(4,1.0);
     h.app.adding=true;
     h.app.set_page_visible(4,false);
-    assert_eq!(h.app.page,0);
+    assert_eq!(h.app.page,if cfg!(target_os="macos"){1}else{0});
     assert!(!h.app.is_editing());
+    if cfg!(target_os="macos") {
+        for page in [0,1,2,3,5,6,7] {h.app.set_page_visible(page,false);}
+        assert_eq!(h.app.page,8);
+        h.app.set_page_visible(8,false);
+        assert!(h.app.settings.visible_pages[8],"不能隐藏最后一个可用页面");
+        h.app.set_page_visible(4,true);
+        h.app.show_page(4);
+        assert_eq!(h.app.page,4,"重新开启的待办页面可直接访问");
+        h.app.show_page(5);
+        assert_eq!(h.app.page,4,"首期隐藏页面不能进入导航");
+        return;
+    }
     for page in [0,1,3,5,6,7,8] {h.app.set_page_visible(page,false);}
     assert_eq!(h.app.page,2);
     h.app.set_page_visible(2,false);
@@ -3363,6 +3564,24 @@ fn page_visibility_moves_away_from_hidden_page_and_keeps_one_page() {
 fn page_visibility_does_not_reopen_hidden_pages_through_shortcuts_or_drops() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
+    if cfg!(target_os="macos") {
+        let current=h.app.page;
+        let mail_visible=h.app.settings.visible_pages[5];
+        h.app.set_page_visible(5,false);
+        h.app.show_page(5);
+        assert_eq!(h.app.page,current,"隐藏页面请求不能改变当前页面");
+        assert!(!h.app.settings_open,"隐藏页面请求不能打开其设置页");
+        assert_eq!(h.app.settings.visible_pages[5],mail_visible,"隐藏页历史配置原样保留");
+        h.app.set_page_visible(3,false);
+        let file=crate::model::config_dir().join("shelf-hidden.txt");
+        std::fs::create_dir_all(crate::model::config_dir()).unwrap();
+        std::fs::write(&file,"test").unwrap();
+        h.app.on_drop(vec![file]);
+        assert_eq!(h.app.page,current);
+        assert!(h.app.shelf.items.is_empty());
+        assert!(h.app.settings.visible_pages[3],"置物架的历史可见性不能被 Mac 首期写回");
+        return;
+    }
     h.app.set_page_visible(5,false);
     h.app.show_page(5);
     assert_eq!(h.app.page,0);
@@ -3713,6 +3932,8 @@ fn mascot_rest_and_focus_have_distinct_states(){
 }
 
 #[test]
+// Mac 侧边停靠收起态不展示吉祥物常驻图标。
+#[cfg(not(target_os = "macos"))]
 fn mascot_stays_beside_the_clock_and_all_resident_components(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.settings.pet=false;h.power=(Some(80),true);h.quota_accounts(5);
@@ -3881,6 +4102,8 @@ fn mascot_system_idle_wakes_once_then_follows_pointer(){
     for _ in 0..60 {h.frame(vec![]);}assert_eq!(h.app.pet_state(),PetState::Curious);assert!(!h.app.open);
 }
 #[test]
+// Mac 侧边停靠收起态不展示吉祥物。
+#[cfg(not(target_os = "macos"))]
 fn mascot_feedback_plays_beside_notice_and_respects_switches(){
     use crate::extras::PetState;
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
@@ -4257,7 +4480,8 @@ fn todo_edit_choice_gallery(){
 
 #[test]
 fn task_editor_saves_and_cancels_inside_island(){
-    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    if cfg!(target_os="macos") {h.app.show_page(4);} else {h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);}
     h.app.todos.items.push(crate::model::TodoItem{text:"准备会议".into(),done_on:None,due:None,reminded:false,..Default::default()});h.app.go(4,1.0);h.hover(H::local(300.0,60.0),0.8);h.app.open_task_dialog(0);
     h.hover(H::local(300.0,60.0),0.2);assert!(h.app.is_editing());h.click(H::local(326.0,110.0));assert!(!h.app.is_editing());assert_eq!(h.app.todos.items[0].text,"准备会议");
     h.app.open_task_dialog(0);h.frame(vec![egui::Event::Key{key:egui::Key::Escape,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()}]);assert!(!h.app.is_editing());
@@ -4265,8 +4489,17 @@ fn task_editor_saves_and_cancels_inside_island(){
 #[test]
 fn focus_timer_gets_room_in_the_collapsed_island(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();for _ in 0..90 {h.frame(vec![]);}
-    let before=h.app.current_width();h.app.pomo.running=true;
-    for _ in 0..100 {h.frame(vec![]);}assert!(h.app.current_width()>before+20.0);assert!(h.app.pomo.remaining<1500.0);
+    if cfg!(target_os="macos") {
+        let before=h.app.side_bar_len();
+        h.app.pomo.running=true;
+        for _ in 0..100 {h.frame(vec![]);}
+        assert!(h.app.side_items().contains(&crate::side_dock::SideItem::Focus));
+        assert!(h.app.side_bar_len()>before+20.0,"侧边专注状态应增加竖排常驻栏长度");
+    } else {
+        let before=h.app.current_width();h.app.pomo.running=true;
+        for _ in 0..100 {h.frame(vec![]);}assert!(h.app.current_width()>before+20.0);
+    }
+    assert!(h.app.pomo.remaining<1500.0);
 }
 
 #[test]
@@ -4363,6 +4596,15 @@ fn collapsed_focus_uses_tomato_and_rest_uses_a_white_cup(){
         for _ in 0..120 {h.frame(vec![]);}
         let secs=h.app.pomo.remaining.ceil() as u32;let text=format!("{:02}:{:02}",secs/60,secs%60);
         let color=if phase==Phase::Focus{crate::theme::RED_TOP}else{crate::theme::SOFT_GREEN};
+        if cfg!(target_os="macos") {
+            let indicator=if phase==Phase::Focus{crate::theme::RED_TOP}else{crate::theme::GREEN};
+            assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Circle(c)if c.fill==indicator)),
+                "侧边常驻栏应使用阶段颜色标记专注或休息");
+            let minutes=(h.app.pomo.remaining/60.0).ceil().max(0.0) as u32;
+            assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==format!("{minutes}′"))),
+                "侧边常驻栏应显示剩余分钟数");
+            continue;
+        }
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()==text && t.fallback_color==color)),"常驻倒计时颜色应跟随阶段");
         let tomato=h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Mesh(m) if m.vertices.iter().any(|v|v.color==crate::theme::RED_TOP)));
         if phase==Phase::Focus {assert!(tomato,"专注时应显示红色番茄水位");}
@@ -4913,7 +5155,9 @@ fn bluetooth_badge_follows_connect_and_disconnect(){
 
 #[test]
 fn focus_settings_are_inside_focus_page(){
-    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.go(1,1.0);h.hover(H::local(300.0,60.0),0.8);h.click(H::local(110.0,18.0));assert_eq!(h.app.page,1);assert_eq!(h.app.subpage,Some(1));
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    if cfg!(target_os="macos") {h.app.show_page(1);} else {h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.go(1,1.0);}
+    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(110.0,18.0));assert_eq!(h.app.page,1);assert_eq!(h.app.subpage,Some(1));
 }
 
 #[test]
@@ -5199,7 +5443,15 @@ fn language_notice_text_is_vertically_centered() {
         })
     }
     let text=find(&h.shapes).expect("输入语言状态应可见");
-    assert!((text.center().y-19.0).abs()<1.0,"文字应与图标垂直居中：{text:?}");
+    if cfg!(target_os="macos") {
+        let icon=h.shapes.iter().find_map(|shape|match &shape.shape {
+            egui::Shape::Text(label) if label.galley.text()=="EN"=>Some(label.visual_bounding_rect()),
+            _=>None,
+        }).expect("英语状态图标应可见");
+        assert!((text.center().y-icon.center().y).abs()<1.0,"文字应与图标垂直居中：文字 {text:?}，图标 {icon:?}");
+    } else {
+        assert!((text.center().y-19.0).abs()<1.0,"文字应与图标垂直居中：{text:?}");
+    }
 }
 
 #[test]
@@ -5374,7 +5626,9 @@ fn todo_reminder_picker_is_embedded_in_the_island(){
     h.click(H::local(343.0,46.0));
     for _ in 0..90 {h.frame(vec![]);}
     assert_eq!(h.app.expanded_height(),PH,"右侧滚轮应保持待办页原来的高度");
-    assert!(h.hit.height()<=PH+2.0,"选择时间不能撑大岛体");
+    let side_hit_padding=if h.app.side(){4.0}else{2.0};
+    assert!(h.hit.height()<=h.app.expanded_height()+side_hit_padding+0.1,
+        "选择时间不能撑大岛体：命中区高度 {}，面板高度 {}，停靠 {:?}",h.hit.height(),h.app.expanded_height(),h.app.dock());
     for label in ["准备会议","已完成","取消","完成","暂不提醒"] {
         let (rect,clip)=h.shapes.iter().find_map(|s|match &s.shape {
             egui::Shape::Text(t) if t.galley.text()==label=>Some((t.visual_bounding_rect(),s.clip_rect)),_=>None,
@@ -6065,19 +6319,31 @@ fn page_order_persists_and_controls_navigation() {
     h.app.settings.save();
     let settings=crate::model::Settings::load();
     assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8]);
-    let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
-    assert_eq!(restarted.page(),5);
-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
-    for expected in [5,2,0] {
-        h.click(H::local(398.0,68.0));
-        assert_eq!(h.app.page,expected);
-        h.hover(H::local(300.0,60.0),0.7);
+    let mut restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
+    let first_available=settings.page_order.iter().copied()
+        .find(|page|crate::platform::page_available(*page)&&settings.visible_pages[*page])
+        .unwrap();
+    assert_eq!(restarted.page(),first_available);
+    if cfg!(target_os = "macos") {
+        for page in 0..crate::app::PAGE_NAMES.len() {
+            if crate::platform::page_available(page) { continue; }
+            let current=restarted.page();
+            restarted.show_page(page);
+            assert_eq!(restarted.page(),current,"隐藏页面请求不得绕过平台能力过滤");
+        }
+    } else {
+        for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
+        h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+        for expected in [5,2,0] {
+            h.click(H::local(398.0,68.0));
+            assert_eq!(h.app.page,expected);
+            h.hover(H::local(300.0,60.0),0.7);
+        }
+        h.click(H::local(21.0,68.0));
+        assert_eq!(h.app.page,2);
+        h.app.set_page_visible(2,false);
+        assert_eq!(h.app.page,5);
     }
-    h.click(H::local(21.0,68.0));
-    assert_eq!(h.app.page,2);
-    h.app.set_page_visible(2,false);
-    assert_eq!(h.app.page,5);
     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
         assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8]);
@@ -6100,16 +6366,40 @@ fn page_order_drag_applies_on_release_and_saves() {
         let child=output.lock().unwrap().take().unwrap();h.shapes=child.shapes;
     }
     for _ in 0..3 {draw(&mut h,vec![]);}
-    let point=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape {egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect().left_center()),_=>None}).unwrap();
-    let from=point(&h,"播放控制与同步歌词")+egui::vec2(-18.0,-6.0);
-    let to=point(&h,"喝水与久坐提醒");
+    let point=|h:&H,label:&str,description:Option<&str>|{
+        let mut shapes=h.shapes.iter().filter_map(|shape|match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text()==label=>Some(text.visual_bounding_rect()),
+            _=>None,
+        });
+        if let Some(description)=description {
+            let description_y=h.shapes.iter().find_map(|shape|match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text()==description=>Some(text.visual_bounding_rect().center().y),
+                _=>None,
+            }).unwrap();
+            shapes.min_by(|a,b|(a.center().y-description_y).abs().total_cmp(&(b.center().y-description_y).abs())).unwrap().left_center()
+        } else {
+            shapes.next().unwrap().left_center()
+        }
+    };
+    let (from_label,to_label,expected_order)=if cfg!(target_os="macos") {
+        ("专注","天气",[0,2,4,3,8,5,6,7,1])
+    } else {
+        ("播放控制与同步歌词","喝水与久坐提醒",[1,2,0,3,4,5,6,7,8])
+    };
+    let (from_description,to_description)=if cfg!(target_os="macos") {
+        (Some("番茄钟与休息计时"),Some("当地天气与七日预报"))
+    } else {
+        (None,None)
+    };
+    let from=point(&h,from_label,from_description)+egui::vec2(-18.0,-6.0);
+    let to=point(&h,to_label,to_description);
     let button=|pos,pressed|egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
     assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8]);
     draw(&mut h,vec![button(to,false)]);
-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8]);
+    assert_eq!(h.app.settings.page_order,expected_order);
     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
 }
 
@@ -6137,12 +6427,14 @@ fn general_settings_controls_fit_when_resizing_to_minimum_width() {
         for label in labels {
             let shape=frame.shapes.iter().find(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()==label))
                 .unwrap_or_else(||panic!("窗口宽 {width} 时缺少控件 {label}"));
-            assert!(shape.clip_rect.contains_rect(shape.shape.visual_bounding_rect()),"窗口宽 {width} 时 {label} 被裁切");
+            assert!(shape.clip_rect.contains_rect(shape.shape.visual_bounding_rect()),
+                "窗口宽 {width} 时 {label} 被裁切：文字 {:?}，裁剪区 {:?}",shape.shape.visual_bounding_rect(),shape.clip_rect);
         }
         for shape in &frame.shapes {
             if let egui::Shape::Rect(r)=&shape.shape {
                 if r.rect.size()==egui::vec2(34.0,20.0) {
-                    assert!(r.rect.right()<=shape.clip_rect.right(),"窗口宽 {width} 时开关右侧被裁切");
+                    assert!(r.rect.right()<=shape.clip_rect.right(),
+                        "设置页 {tab}，窗口宽 {width} 时开关右侧被裁切：开关 {:?}，clip {:?}",r.rect,shape.clip_rect);
                 }
             }
         }
@@ -6170,7 +6462,9 @@ fn settings_theme_follows_system_and_preserves_island_style() {
                 viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),..Default::default()})).collect(),..Default::default()};
             *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
         });
-        for tab in (0..12).chain([crate::extras::SETTINGS_TAB_APPEARANCE,crate::extras::SETTINGS_TAB_POSITION]) {
+        let tabs=(0..12).chain([crate::extras::SETTINGS_TAB_APPEARANCE,crate::extras::SETTINGS_TAB_POSITION])
+            .filter(|tab|crate::platform::settings_tab_available(*tab)).collect::<Vec<_>>();
+        for tab in tabs {
             h.app.settings_tab=tab;
             // AI 额度的添加账号表单默认收起，点「＋ 添加账号」才展开；展开后再检查表单行对齐。
             h.app.quota.connect_open=tab==11;
@@ -6206,7 +6500,10 @@ fn settings_theme_follows_system_and_preserves_island_style() {
                     }).unwrap();
                     let rows=if tab==0 {vec![("时间制式",vec!["24 小时","12 小时"]),("时段文字",vec!["不显示","上午 / 下午","详细时段"])]} else {vec![("显示屏",vec!["跟随主屏"])]};
                     for (label,choices) in rows {
-                        for choice in choices {assert!((center(label)-center(choice)).abs()<1.0,"{label}与{choice}应垂直居中：{} / {}",center(label),center(choice));}
+                        for choice in choices {
+                            let delta_px=((center(label)-center(choice)).abs()*child.pixels_per_point).round();
+                            assert!(delta_px<=1.0,"{label}与{choice}应在一个像素内垂直居中：{} / {}，差值 {:.2}px",center(label),center(choice),delta_px);
+                        }
                     }
                 }
                 let background=if dark{egui::Color32::from_rgb(25,25,27)}else{egui::Color32::from_rgb(246,247,249)};
@@ -6222,6 +6519,24 @@ fn settings_theme_follows_system_and_preserves_island_style() {
                 }
                 raster.free_textures(&root.textures_delta);raster.free_textures(&child.textures_delta);
             }
+        }
+    }
+    if cfg!(target_os="macos") {
+        let mut h=H::new();h.app.open_settings();h.ctx.set_embed_viewports(false);
+        let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
+        egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+            let id=viewport.ids.this;
+            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1240.0))),
+                viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),..Default::default()})).collect(),..Default::default()};
+            *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+        });
+        for tab in [1,5,7,8,11] {
+            h.app.settings_tab=tab;
+            for _ in 0..3 {let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));}
+            let frame=output.lock().unwrap().take().unwrap();
+            assert_eq!(h.app.settings_tab,0,"隐藏设置页 {tab} 必须回退到通用设置");
+            assert!(frame.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()=="通用")),
+                "直接请求隐藏设置页 {tab} 不能重新打开它");
         }
     }
 }
@@ -6546,21 +6861,32 @@ fn clock_12h_formats_boundaries_and_persists() {
     assert_eq!(h.app.settings.clock_text("13:05"),"下午 1:05");
     h.app.settings.save();
     assert!(crate::model::Settings::load().clock_12h);
-    h.app.settings.pet=false;
-    h.quota_accounts(5);
-    for _ in 0..90 { h.frame(vec![]); }
-    let text_rect=|label:&str|h.shapes.iter().find_map(|s|match &s.shape {
-        egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect()),_=>None,
-    }).unwrap();
-    assert!(h.app.resident.current().x[crate::bar_layout::quota_slot(4)].unwrap()+WIN_W/2.0+13.5<text_rect("上午").left());
-    h.hover(H::local(200.0,40.0),1.0);
-    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="9:41")));
+    if cfg!(target_os="macos") {
+        for _ in 0..90 {h.frame(vec![]);}
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="9")));
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="41")));
+    } else {
+        h.app.settings.pet=false;
+        h.quota_accounts(5);
+        for _ in 0..90 { h.frame(vec![]); }
+        let text_rect=|label:&str|h.shapes.iter().find_map(|s|match &s.shape {
+            egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect()),_=>None,
+        }).unwrap();
+        assert!(h.app.resident.current().x[crate::bar_layout::quota_slot(4)].unwrap()+WIN_W/2.0+13.5<text_rect("上午").left());
+        h.hover(H::local(200.0,40.0),1.0);
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="9:41")));
+    }
     h.app.settings.clock_period=0;
     h.app.settings.clock_12h=false;
     h.app.settings.save();
     assert!(!crate::model::Settings::load().clock_12h);
     h.frame(vec![]);
-    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="09:41")));
+    if cfg!(target_os="macos") {
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="09")));
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="41")));
+    } else {
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="09:41")));
+    }
 }
 
 #[test]
@@ -7407,6 +7733,8 @@ fn side_quota_fixture(h:&mut H)->(String,String){
 }
 
 #[test]
+// AI 额度模块在 Mac 首期隐藏。
+#[cfg(not(target_os = "macos"))]
 fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
@@ -7548,11 +7876,32 @@ fn side_frame_events(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>)->crat
     out.unwrap()
 }
 
+fn click_side_canvas(h: &mut H, point: Pos2) {
+    side_frame(h, Some(point));
+    for pressed in [true, false] {
+        side_frame_events(
+            h,
+            Some(point),
+            vec![egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+}
+
 #[test]
 fn side_dock_opens_from_the_edge_and_collapses_back(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
-    for (dock,shape) in [(crate::model::Dock::Left,crate::model::IslandShape::Notch),(crate::model::Dock::Right,crate::model::IslandShape::Pill)] {
+    let docks=if cfg!(target_os="macos") {
+        vec![(crate::model::Dock::Right,crate::model::IslandShape::Pill)]
+    } else {
+        vec![(crate::model::Dock::Left,crate::model::IslandShape::Notch),(crate::model::Dock::Right,crate::model::IslandShape::Pill)]
+    };
+    for (dock,shape) in docks {
         let mut h=H::new();h.app.settings.dock=dock;h.app.settings.island_shape=shape;
         let away=Some(Pos2::new(w/2.0,hgt-5.0));
         let mut out=side_frame(&mut h,away);
@@ -8034,6 +8383,8 @@ fn messenger_accounts_get_number_tags_and_clear_one_by_one(){
 }
 
 #[test]
+// Mac 首期隐藏系统通知及其聊天软件提醒入口。
+#[cfg(not(target_os = "macos"))]
 fn messenger_notifications_stay_right_and_move_outside_expanded_panel(){
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();h.app.settings.wechat_notifications=true;
@@ -8068,6 +8419,8 @@ fn messenger_notifications_align_with_system_banner(){
 }
 
 #[test]
+// Mac 首期不读取系统通知或聊天软件提醒。
+#[cfg(not(target_os = "macos"))]
 fn messenger_notifications_side_docks_keep_one_column(){
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for dock in [crate::model::Dock::Left,crate::model::Dock::Right]{
@@ -8090,6 +8443,8 @@ fn messenger_notifications_side_docks_keep_one_column(){
 }
 
 #[test]
+// 置物架页面在 Mac 首期隐藏，不能通过文件拖放重新进入。
+#[cfg(not(target_os = "macos"))]
 fn side_dock_file_drag_opens_the_shelf_and_drop_saves_it(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
@@ -8191,6 +8546,8 @@ fn unread_gallery(){
 }
 
 #[test]
+// 置物架页面在 Mac 首期隐藏。
+#[cfg(not(target_os = "macos"))]
 fn shelf_menu_last_action_fits_inside_window_and_works(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
@@ -8532,6 +8889,22 @@ fn weather_chip_sits_after_the_clock_on_the_resident_bar(){
     let mut h=H::new();h.app.settings.pet=false;
     h.app.weather.snapshot=Some(crate::weather::Snapshot{condition:None,attributions:vec![],place:"杭州".into(),position:None,auto:false,temp:9.0,feels:Some(5.6),humidity:Some(58),wind:Some(13.9),code:51,day:true,high:Some(15.2),low:Some(6.8),sunrise:Some("06:52".into()),sunset:Some("17:21".into()),sun_times:None,days:vec![],at:chrono::Utc::now().timestamp()});
     for _ in 0..60{h.frame(vec![]);}
+    if cfg!(target_os="macos") {
+        let items=h.app.side_items();
+        let clock_index=items.iter().position(|item|*item==crate::side_dock::SideItem::Clock).expect("侧边常驻栏应有时钟");
+        let weather_index=items.iter().position(|item|*item==crate::side_dock::SideItem::Weather).expect("有天气快照时侧边常驻栏应有天气");
+        assert!(clock_index<weather_index,"侧边时钟应排在天气前面");
+        let text_rect=|label:&str|h.shapes.iter().find_map(|shape|match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text()==label=>Some(text.visual_bounding_rect()),
+            _=>None,
+        }).unwrap_or_else(||panic!("侧边常驻栏应显示 {label}"));
+        let hour=text_rect("09");let minute=text_rect("41");let temp=text_rect("9°");
+        assert!(hour.center().y<minute.center().y && minute.center().y<temp.center().y,
+            "侧边常驻栏应依次显示时、分和温度：时 {hour:?}，分 {minute:?}，温度 {temp:?}");
+        click_side_canvas(&mut h,temp.center());
+        assert_eq!(h.app.page(),8,"点温度也能打开天气页");
+        return;
+    }
     let layout=h.app.resident.current();
     let clock=layout.x[crate::bar_layout::CLOCK].expect("时钟应常驻");
     let chip=layout.x[crate::bar_layout::WEATHER].expect("有快照时天气徽标应紧跟时钟占位");

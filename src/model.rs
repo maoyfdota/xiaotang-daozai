@@ -1,7 +1,9 @@
 ﻿//! 持久化与状态模型。
 //!
-//! 文件布局与原工具同名同结构（原工具字符串中可见的路径与键名），但默认目录
-//! 用独立的 `%APPDATA%\Daozai`，避免与原工具的 `%APPDATA%\Nusa` 互相覆盖：
+//! 文件布局与原工具同名同结构（原工具字符串中可见的路径与键名），数据目录
+//! 使用独立的 Daozai 子目录，避免与原工具的 Nusa 数据互相覆盖：
+//!   macOS: ~/Library/Application Support/Daozai
+//!   Windows: %APPDATA%\Daozai
 //!   %APPDATA%\Daozai\settings.txt   -> pet=0/1, minimal=0/1
 //!   %APPDATA%\Daozai\todo.txt
 //!   %APPDATA%\Daozai\water.txt      -> bottle=<ml> / goal=<ml> / start=YYYY-MM-DD
@@ -13,15 +15,20 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn env_dir(key: &str) -> PathBuf {
-    PathBuf::from(std::env::var(key).unwrap_or_else(|_| ".".into()))
+pub fn config_dir() -> PathBuf {
+    config_dir_from(
+        std::env::var_os("DAOZAI_DATA_DIR").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("APPDATA").map(PathBuf::from),
+    )
 }
 
-pub fn config_dir() -> PathBuf {
-    if let Ok(root) = std::env::var("DAOZAI_DATA_DIR") {
-        return PathBuf::from(root);
-    }
-    env_dir("APPDATA").join("Daozai")
+fn config_dir_from(data_dir: Option<PathBuf>, home: Option<PathBuf>, _appdata: Option<PathBuf>) -> PathBuf {
+    if let Some(root) = data_dir {return root;}
+    #[cfg(target_os = "macos")]
+    {home.unwrap_or_else(||PathBuf::from(".")).join("Library/Application Support/Daozai")}
+    #[cfg(not(target_os = "macos"))]
+    {_appdata.unwrap_or_else(||PathBuf::from(".")).join("Daozai")}
 }
 
 fn read_kv(path: &Path) -> Vec<(String, String)> {
@@ -96,6 +103,31 @@ fn replace_file(tmp:&Path,path:&Path)->std::io::Result<()> {
         return unsafe{MoveFileExW(PCWSTR(source.as_ptr()),PCWSTR(target.as_ptr()),MOVEFILE_REPLACE_EXISTING|MOVEFILE_COPY_ALLOWED|MOVEFILE_WRITE_THROUGH)}.map_err(std::io::Error::other);
     }
     result
+}
+
+#[cfg(test)]
+mod config_dir_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_data_directory_overrides_platform_defaults() {
+        let path=config_dir_from(Some(PathBuf::from("custom/data")),Some(PathBuf::from("home")),Some(PathBuf::from("appdata")));
+        assert_eq!(path,PathBuf::from("custom/data"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_uses_application_support() {
+        let path=config_dir_from(None,Some(PathBuf::from("/Users/alice")),Some(PathBuf::from("/unused")));
+        assert_eq!(path,PathBuf::from("/Users/alice/Library/Application Support/Daozai"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_default_keeps_appdata_location() {
+        let path=config_dir_from(None,Some(PathBuf::from("C:/Users/alice")),Some(PathBuf::from("C:/Users/alice/AppData/Roaming")));
+        assert_eq!(path,PathBuf::from("C:/Users/alice/AppData/Roaming/Daozai"));
+    }
 }
 
 /// 岛体配色皮肤（与形状独立，可任意组合）。

@@ -944,8 +944,16 @@ fn create_window(
         event_loop,
         native_options,
         window_settings,
-    )
-    .with_visible(false); // Start hidden until we render the first frame to fix white flash on startup (https://github.com/emilk/egui/pull/3631)
+    );
+    // A hidden macOS overlay may never receive its first redraw, so it cannot
+    // run App::update to request visibility or position itself. Keep the
+    // first-frame flash guard on other platforms and honor the app's macOS
+    // visibility setting.
+    let viewport_builder = if cfg!(target_os = "macos") {
+        viewport_builder
+    } else {
+        viewport_builder.with_visible(false)
+    };
 
     let window = egui_winit::create_window(egui_ctx, event_loop, &viewport_builder)?;
     epi_integration::apply_window_settings(&window, window_settings);

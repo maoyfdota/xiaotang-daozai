@@ -84,14 +84,25 @@ fn health_actions_clear_pending_and_keep_messenger_unread(){
 #[test]
 fn health_notice_body_and_lyrics_badge_confirm_without_recording_water(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    for lyrics in [false,true]{
+    let lyrics_cases: &[bool] = if cfg!(target_os="macos") { &[false] } else { &[false,true] };
+    for &lyrics in lyrics_cases {
         let mut h=H::new();h.frame(vec![]);
         if lyrics {
             h.app.settings.island_lyrics=true;
             h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"测试歌曲".into(),artist:"歌手".into(),playing:true,duration:200.0,..Default::default()};
         }
         h.app.alert("喝水时间到了","喝点水吧",2,false);for _ in 0..60{h.frame(vec![]);}
-        if lyrics{h.click_notice_badge();}else{h.click_text("喝水时间到了");}
+        if lyrics {
+            h.click_notice_badge();
+        } else if cfg!(target_os="macos") {
+            let point=h.shapes.iter().find_map(|shape|match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text()=="喝水时间到了"=>Some(text.visual_bounding_rect().center()),
+                _=>None,
+            }).expect("提醒正文应可见");
+            click_side_canvas(&mut h,point);
+        } else {
+            h.click_text("喝水时间到了");
+        }
         assert!(!h.app.health_pending[0] && h.app.notice.is_none());
         assert_eq!(h.app.water.drunk_ml,0);
         assert!((h.app.last_reminder-h.t).abs()<0.1);
@@ -100,12 +111,41 @@ fn health_notice_body_and_lyrics_badge_confirm_without_recording_water(){
 
 #[test]
 fn health_side_docks_keep_confirmation_independent(){
-    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    for dock in [crate::model::Dock::Left,crate::model::Dock::Right]{
-        let mut h=due();h.app.settings.dock=dock;h.app.show_page(crate::app::WATER_PAGE);
-        h.hover(H::local(280.0,80.0),1.0);
-        click_badge(&mut h,"water");assert!(h.app.health_pending[1]);
-        click_badge(&mut h,"sit");assert_eq!(h.app.health_pending,[false,false]);
+    use crate::model::Dock;
+    use crate::side_dock::{SIDE_H, SIDE_W};
+
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let docks: &[Dock] = if cfg!(target_os = "macos") {
+        &[Dock::Right]
+    } else {
+        &[Dock::Left, Dock::Right]
+    };
+    for &dock in docks {
+        let mut h = due();
+        h.app.settings.dock = dock;
+        h.app.show_page(crate::app::WATER_PAGE);
+        let edge = Pos2::new(if dock == Dock::Left { 0.5 } else { SIDE_W - 0.5 }, SIDE_H / 2.0);
+        for _ in 0..60 {
+            side_frame(&mut h, Some(edge));
+        }
+        assert!(h.app.open, "{dock:?} 停靠应从屏幕边缘展开");
+        for (kind, pending) in [("water", [false, true]), ("sit", [false, false])] {
+            for _ in 0..36 {
+                let point = badge(&h, kind).center();
+                side_frame(&mut h, Some(point));
+            }
+            let point = badge(&h, kind).center();
+            for pressed in [true, false] {
+                let event = egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                };
+                side_frame_events(&mut h, Some(point), vec![event]);
+            }
+            assert_eq!(h.app.health_pending, pending, "{dock:?} 停靠应独立确认 {kind} 提醒");
+        }
     }
 }
 

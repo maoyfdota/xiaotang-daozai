@@ -2,22 +2,43 @@ use crate::{bar_layout::*,paint::{self,Card,H},theme::{self,W}};
 use eframe::egui::{self,Color32,RichText,Rect,Pos2,Vec2};
 
 pub(crate) fn preview_layout(order:&[usize],quotas:usize)->Layout {
-    let mut layout=Layout::new(true,quotas.max(1),true,true,false,true,true);
+    let mut layout=Layout::new(crate::platform::system_status_available(),
+        if crate::platform::page_available(crate::app::QUOTA_PAGE){quotas.max(1)}else{0},
+        crate::platform::page_available(crate::app::MUSIC_PAGE),
+        crate::platform::page_available(crate::app::FOCUS_PAGE),
+        crate::platform::notification_controls_available(),true,
+        crate::platform::page_available(crate::app::WEATHER_PAGE));
     layout.reorder(order);layout
+}
+
+fn resident_slot_available(slot:usize)->bool {
+    match slot {
+        BATTERY=>crate::platform::system_status_available(),
+        QUOTA=>crate::platform::page_available(crate::app::QUOTA_PAGE),
+        MUSIC=>crate::platform::page_available(crate::app::MUSIC_PAGE),
+        FOCUS=>crate::platform::page_available(crate::app::FOCUS_PAGE),
+        BELL=>crate::platform::notification_controls_available(),
+        WEATHER=>crate::platform::page_available(crate::app::WEATHER_PAGE),
+        _=>true,
+    }
 }
 
 impl crate::app::App {
     pub(crate) fn resident_order_settings(&mut self,ui:&mut egui::Ui){
         let default=if self.settings.show_battery {DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,WEATHER,BATTERY,MUSIC,FOCUS]};
-        let mut order=if valid_order(&self.settings.resident_order){self.settings.resident_order.clone()}else{default.clone()};
+        let stored=if valid_order(&self.settings.resident_order){self.settings.resident_order.clone()}else{default.clone()};
+        let mut order=Vec::new();
+        for slot in stored.into_iter().chain(default.iter().copied()){
+            if resident_slot_available(slot)&&!order.contains(&slot){order.push(slot);}
+        }
         ui.horizontal(|ui|{
             ui.label(RichText::new("拖动岛上的图标").color(ui.visuals().text_color()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                if ui.small_button("恢复默认").clicked(){self.settings.resident_order.clear();order=default;}
+                if ui.small_button("恢复默认").clicked(){self.settings.resident_order.clear();order=default.clone();}
             });
         });
         ui.add_space(12.0);
-        let indices=self.quota_bar_indices();let count=indices.len();
+        let indices=self.quota_bar_indices();let count=if crate::platform::page_available(crate::app::QUOTA_PAGE){indices.len()}else{0};
         let weather_snapshot=self.weather_pill().cloned();
         let mut layout=preview_layout(&order,count);
         for (position,extra) in self.quota_balance_layout(ui.ctx()){layout.balance_tail(position,extra);}
@@ -91,7 +112,13 @@ impl crate::app::App {
             crate::skin_paint::recolor_layer(ui.ctx(),ui.layer_id(),&[(content_from,end)],&palette);
         }
         if let Some((slot,index))=movement{
-            if let Some(from)=order.iter().position(|value|*value==slot){order.remove(from);order.insert(index,slot);self.settings.resident_order=order;}
+            if let Some(from)=order.iter().position(|value|*value==slot){
+                let slot=order.remove(from);order.insert(index.min(order.len()),slot);
+                let mut saved=if valid_order(&self.settings.resident_order){self.settings.resident_order.clone()}else{default.clone()};
+                let positions:Vec<_>=saved.iter().enumerate().filter_map(|(position,slot)|resident_slot_available(*slot).then_some(position)).collect();
+                for (position,slot) in positions.into_iter().zip(order.iter().copied()){saved[position]=slot;}
+                self.settings.resident_order=saved;
+            }
         }
         ui.painter().text(Pos2::new(stage.center().x,stage.bottom()-22.0),egui::Align2::CENTER_CENTER,"按住图标左右拖动",theme::font(11.0,W::Regular),Color32::from_gray(160));
         ui.add_space(8.0);

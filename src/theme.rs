@@ -96,6 +96,8 @@ fn font_dirs() -> Vec<PathBuf> {
         }
     }
     v.push(PathBuf::from("assets/fonts"));
+    #[cfg(target_os = "macos")]
+    v.push(PathBuf::from("/System/Library/Fonts"));
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
     v.push(PathBuf::from(windir).join("Fonts"));
     for d in [
@@ -164,14 +166,14 @@ fn build_fonts()->FontDefinitions {
         find(&[("segoeuib.ttf", 0), ("selawkb.ttf", 0)], &dirs),
     ];
     let cjk = [
-        find(&[("msyh.ttc", 1), ("NotoSansSC-Regular.otf", 0), ("NotoSansCJK-Regular.ttc", 2)], &dirs),
-        find(&[("msyhbd.ttc", 1), ("NotoSansSC-Medium.otf", 0), ("NotoSansCJK-Medium.ttc", 2)], &dirs),
-        find(&[("msyhbd.ttc", 1), ("NotoSansSC-Bold.otf", 0), ("NotoSansCJK-Bold.ttc", 2)], &dirs),
+        find(&[("msyh.ttc", 1), ("NotoSansSC-Regular.otf", 0), ("NotoSansCJK-Regular.ttc", 2), ("Hiragino Sans GB.ttc", 0)], &dirs),
+        find(&[("msyhbd.ttc", 1), ("NotoSansSC-Medium.otf", 0), ("NotoSansCJK-Medium.ttc", 2), ("Hiragino Sans GB.ttc", 2)], &dirs),
+        find(&[("msyhbd.ttc", 1), ("NotoSansSC-Bold.otf", 0), ("NotoSansCJK-Bold.ttc", 2), ("Hiragino Sans GB.ttc", 2)], &dirs),
     ];
 
     let korean = [
-        find(&[("malgun.ttf", 0), ("NotoSansKR-Regular.otf", 0), ("NotoSansCJK-Regular.ttc", 1)], &dirs),
-        find(&[("malgunbd.ttf", 0), ("malgun.ttf", 0), ("NotoSansKR-Bold.otf", 0), ("NotoSansCJK-Bold.ttc", 1)], &dirs),
+        find(&[("malgun.ttf", 0), ("NotoSansKR-Regular.otf", 0), ("NotoSansCJK-Regular.ttc", 1), ("AppleSDGothicNeo.ttc", 0)], &dirs),
+        find(&[("malgunbd.ttf", 0), ("malgun.ttf", 0), ("NotoSansKR-Bold.otf", 0), ("NotoSansCJK-Bold.ttc", 1), ("AppleSDGothicNeo.ttc", 6)], &dirs),
     ];
 
     // 藏文：前面几种字体都没有藏文字形（#200）。微软喜马拉雅体的下加字、元音符号本身不占宽度、叠在前一个字上，
@@ -232,6 +234,21 @@ pub fn app_icon()->std::sync::Arc<eframe::egui::IconData>{
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_fonts_cover_chinese_and_korean_in_all_weights() {
+        let ctx = eframe::egui::Context::default();
+        super::load_fonts(&ctx);
+        let _ = ctx.run(Default::default(), |ctx| {
+            for weight in [super::W::Regular, super::W::Semibold, super::W::Bold] {
+                let font = super::font(14.0, weight);
+                for ch in "岛仔天气提醒 서울 한글".chars().filter(|ch| !ch.is_whitespace()) {
+                    assert!(ctx.fonts(|fonts| fonts.has_glyph(&font, ch)), "缺少字形：{ch}，字体：{font:?}");
+                }
+            }
+        });
+    }
+
     #[cfg(windows)]
     #[test]
     fn korean_titles_and_lyrics_have_glyphs_in_all_weights(){

@@ -86,7 +86,7 @@ pub(crate) struct State {
 }
 impl State {
     pub fn load()->Self {
-        if cfg!(test){return Self::default();}
+        if cfg!(test)||!crate::platform::qweather_available(){return Self::default();}
         let config=Config::load();let gate=Arc::new(AtomicBool::new(true));
         let client=Client::load(&config.host,&config.credential,gate);
         let mut runtime=qweather::Runtime::default();runtime.reset(&config.host,config.location.clone());
@@ -99,11 +99,13 @@ impl State {
     }
     pub(crate) fn close(&mut self){self.invalidate();self.key.clear();self.query.clear();self.tutorial_open=false;self.tutorial_textures.clear();}
     fn candidate(&self)->Result<Client,Error>{
+        if !crate::platform::qweather_available(){return Err(Error::Invalid);}
         let host=normalize_host(&self.host).map_err(|_|Error::Invalid)?;
         if self.key.is_empty(){if host!=self.config.host{return Err(Error::Invalid);}Client::load(&host,&self.config.credential,Arc::new(AtomicBool::new(true))).ok_or(Error::Invalid)}
         else{Client::new(&host,&self.key,Arc::new(AtomicBool::new(true)))}
     }
     fn test_connection(&mut self){
+        if !crate::platform::qweather_available(){return;}
         self.invalidate();
         match self.candidate(){
             Err(e)=>{self.test_error=Some(e);self.message=Some((e.text(),true));},
@@ -115,6 +117,7 @@ impl State {
         }
     }
     pub fn poll(&mut self,enabled:bool){
+        let enabled=enabled&&crate::platform::qweather_available();
         if let Some(c)=&mut self.client {
             let active=enabled&&self.displayed==Provider::Qweather;
             if !active&&c.gate.swap(false,Ordering::SeqCst){c.gate=Arc::new(AtomicBool::new(false));}
@@ -134,6 +137,7 @@ impl State {
     fn configured(&self)->bool {self.tested.is_some()||(self.test_error.is_none()&&self.displayed==Provider::Qweather&&self.client.is_some()&&self.key.is_empty()&&self.host==self.config.host)}
     fn reset_search(&mut self){self.search=None;self.results.clear();self.geo_credits.clear();self.city_choice=None;self.search_error=None;self.search_sent=false;self.highlighted=0;}
     fn search_due(&mut self,now:f64)->bool {
+        if !crate::platform::qweather_available(){return false;}
         let input=(self.query.trim().to_string(),self.province.trim().to_string());
         if input!=self.search_input {self.reset_search();self.search_input=input;self.search_changed_at=now;}
         let query=&self.search_input.0;
@@ -141,6 +145,7 @@ impl State {
         self.configured()&&enough&&!self.search_sent&&self.search.is_none()&&now-self.search_changed_at>=0.45
     }
     fn search(&mut self){
+        if !crate::platform::qweather_available(){return;}
         if !self.configured()||self.search.is_some(){return;}
         let Some(c)=self.tested.as_ref().or(self.client.as_ref()).cloned()else{return;};
         let query=self.query.trim().to_string();if query.is_empty(){return;}
@@ -149,6 +154,7 @@ impl State {
     }
     fn choose_city(&mut self,location:Location){self.highlighted=self.results.iter().position(|l|l==&location).unwrap_or(0);self.query=location.position.label.clone();self.search_input=(self.query.clone(),self.province.trim().into());self.search_sent=true;self.city_choice=Some(location);}
     fn remember_city(&mut self,location:Location)->Result<bool,&'static str>{
+        if !crate::platform::qweather_available(){return Err("当前版本未启用和风天气。");}
         if self.config.saved.contains(&location){return Ok(false);}
         if self.config.saved.len()>=crate::weather::MAX_CITIES{return Err("已保存 5 个城市，请先移除一个再添加。");}
         let mut config=self.config.clone();config.saved.push(location);config.save().map_err(Error::text)?;self.config=config;Ok(true)
@@ -169,7 +175,7 @@ impl State {
 
 impl App {
     fn apply_weather_source(&mut self){
-        if !self.module_on(WEATHER_PAGE){return;}
+        if !crate::platform::qweather_available()||!self.module_on(WEATHER_PAGE){return;}
         let source=&mut self.weather_source;
         let mut config=source.config.clone();config.provider=source.selected;
         if source.selected==Provider::Qweather {
@@ -197,7 +203,7 @@ impl App {
     }
 
     pub(crate) fn qweather_select_location(&mut self,location:Location){
-        if !self.module_on(WEATHER_PAGE){return;}
+        if !crate::platform::qweather_available()||!self.module_on(WEATHER_PAGE){return;}
         let mut config=self.weather_source.config.clone();config.location=Some(location);
         if config.save().is_err(){self.weather_source.message=Some((Error::Storage.text(),true));return;}
         self.weather_source.config=config;self.qweather_sync_location();
@@ -211,7 +217,7 @@ impl App {
     }
 
     pub(crate) fn qweather_add_city(&mut self){
-        if !self.module_on(WEATHER_PAGE)||!self.weather_source.configured(){return;}
+        if !crate::platform::qweather_available()||!self.module_on(WEATHER_PAGE)||!self.weather_source.configured(){return;}
         let Some(location)=self.weather_source.city_choice.clone()else{return;};
         match self.weather_source.remember_city(location.clone()) {
             Err(error)=>self.weather_source.message=Some((error,true)),
@@ -220,7 +226,7 @@ impl App {
     }
 
     pub(crate) fn qweather_remove_city(&mut self,location:&Location){
-        if !self.module_on(WEATHER_PAGE){return;}
+        if !crate::platform::qweather_available()||!self.module_on(WEATHER_PAGE){return;}
         let mut config=self.weather_source.config.clone();config.saved.retain(|l|l!=location);
         let active_changed=config.location.as_ref()==Some(location);
         if active_changed{config.location=config.saved.first().cloned();}
@@ -232,6 +238,7 @@ impl App {
     }
 
     pub(crate) fn weather_source_settings(&mut self,ui:&mut egui::Ui){
+        if !crate::platform::qweather_available(){return;}
         settings_label(ui,"天气来源");
         settings_card(ui,|ui|{
             let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
@@ -372,6 +379,7 @@ impl App {
     }
 
     pub(crate) fn qweather_city_settings(&mut self,ui:&mut egui::Ui){
+        if !crate::platform::qweather_available(){return;}
         let active=self.weather_source.displayed==Provider::Qweather;
         let configured=self.weather_source.configured();
         let accent=color(ui.ctx(),Color32::from_rgb(96,164,255),Color32::from_rgb(34,108,220));
@@ -509,6 +517,20 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_qweather_is_not_loaded_or_searchable(){
+        if crate::platform::qweather_available(){return;}
+        let state=State::load();
+        assert!(state.selected==Provider::OpenMeteo);
+        assert!(state.displayed==Provider::OpenMeteo);
+        assert!(state.client.is_none());
+        let mut state=State::default();state.mock_verified();state.query="杭州".into();
+        assert!(!state.search_due(1.0));
+        state.search();
+        assert!(state.search.is_none());
+    }
+
+    #[cfg(windows)]
     #[test]
     fn qweather_city_autocomplete_debounces_deduplicates_and_discards_old_results(){
         let mut state=State::default();state.mock_verified();state.query="杭".into();

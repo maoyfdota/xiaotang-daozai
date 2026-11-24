@@ -213,6 +213,7 @@ impl Connect {
         assert_eq!(session.cookie,"session=test");
     }
     #[test]
+    #[cfg(windows)]
     #[ignore="手动验证默认浏览器官网登录，需用户完成登录"]
     fn workbuddy_login_without_extension(){
         let config=super::super::Config::load();

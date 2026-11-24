@@ -522,6 +522,7 @@ dependencies = [
  "mailparse",
  "memmap2",
  "native-tls",
+ "objc",
  "raw-window-handle",
  "regex",
  "ring",

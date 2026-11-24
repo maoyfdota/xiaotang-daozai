@@ -203,6 +203,7 @@ impl App {
     }
 
     pub fn open_calendar(&mut self, meeting:Option<mail::Meeting>) {
+        if !crate::platform::page_available(CALENDAR_PAGE) {return;}
         if let Some(meeting)=meeting {
             if let Some(day)=event_day(&meeting){self.select_calendar_day(day);}
             self.calendar.view.show_ended=has_ended(&meeting,chrono::Local::now().timestamp());
@@ -225,6 +226,7 @@ impl App {
     }
 
     pub(crate) fn request_calendar_month(&mut self, force:bool) {
+        if !crate::platform::page_available(CALENDAR_PAGE) {return;}
         let has_accounts=!self.calendar_configs().is_empty();
         let view=&mut self.calendar.view;
         if !has_accounts || !force && (view.loaded==Some(view.month) || view.loading || !view.error.is_empty()){return;}

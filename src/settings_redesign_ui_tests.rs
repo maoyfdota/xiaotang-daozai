@@ -69,7 +69,49 @@ fn settings_every_tab_renders_with_modules_on_and_off(){
         for tab in 0..=14 {
             h.app.settings_tab=tab;
             for _ in 0..2 {let _=h.ctx.run(egui::RawInput::default(),|ctx|h.app.settings_ui(ctx,false));}
-            assert_eq!(h.app.settings_tab,tab,"绘制分页 {tab} 不应自行跳转");
+            let expected=if crate::platform::settings_tab_available(tab){tab}else{0};
+            assert_eq!(h.app.settings_tab,expected,"分页 {tab} 应保留或回退到平台可用页");
+        }
+    }
+}
+
+#[test]
+fn reminder_settings_keep_local_control_and_filter_platform_integrations(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.notifications=true;
+    h.app.settings.system_notify=true;
+    h.app.settings.sound=true;
+    h.app.settings.read_notifications=true;
+    h.app.settings.system_hud=true;
+    h.app.settings.bluetooth_notifications=true;
+    h.app.settings.save();
+    h.app.open_settings_category(3);
+    assert!(h.app.settings_open);
+    assert_eq!(h.app.settings_tab,6);
+    h.ctx.set_embed_viewports(false);
+    let output=std::sync::Arc::new(Mutex::new(None));let capture=output.clone();
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+        let id=viewport.ids.this;
+        let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1300.0))),
+            viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
+        *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+    });
+    for _ in 0..3 {let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));}
+    let child=output.lock().unwrap().take().unwrap();
+    let texts=child.shapes.iter().filter_map(|s|match &s.shape{egui::Shape::Text(t)=>Some(t.galley.text()),_=>None}).collect::<Vec<_>>();
+    assert!(texts.contains(&"提醒总开关"),"本地提醒总开关必须在 Mac 设置中可见");
+    if cfg!(target_os="macos") {
+        assert!(texts.contains(&"关闭后饮水、专注与待办提醒都不显示"));
+        for hidden in ["提醒方式","系统提示","系统状态","蓝牙设备","聊天软件","微信","连接…"] {
+            assert!(!texts.iter().any(|text|text.contains(hidden)),"Mac 首期不应显示系统集成设置：{hidden}");
+        }
+        let saved=crate::model::Settings::load();
+        assert!(saved.system_notify && saved.sound && saved.read_notifications);
+        assert!(saved.system_hud && saved.bluetooth_notifications,"隐藏系统设置的历史值应保持不变");
+    } else if cfg!(windows) {
+        for visible in ["提醒方式","系统提示","系统状态","蓝牙设备","聊天软件","微信"] {
+            assert!(texts.iter().any(|text|text.contains(visible)),"Windows 设置仍应显示：{visible}");
         }
     }
 }

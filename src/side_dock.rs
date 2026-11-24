@@ -33,8 +33,8 @@ impl SideItem {
 }
 
 impl App {
-    pub(crate) fn dock(&self) -> Dock { self.settings.dock }
-    pub(crate) fn side(&self) -> bool { self.settings.dock.is_side() }
+    pub(crate) fn dock(&self) -> Dock { if cfg!(target_os="macos"){Dock::Right}else{self.settings.dock} }
+    pub(crate) fn side(&self) -> bool { self.dock().is_side() }
 
     /// 竖向胶囊里依次显示的内容。
     pub(crate) fn side_items(&self) -> Vec<SideItem> {
@@ -42,7 +42,7 @@ impl App {
         if self.settings.show_clock {items.push(SideItem::Clock);}
         if self.weather_pill().is_some() {items.push(SideItem::Weather);}
         if self.settings.show_battery && self.resident_power.0.is_some() { items.push(SideItem::Battery); }
-        if self.media.is_music() { items.push(SideItem::Music); }
+        if crate::platform::page_available(crate::app::MUSIC_PAGE) && self.media.is_music() { items.push(SideItem::Music); }
         if self.pomo.running { items.push(SideItem::Focus); }
         items.extend(self.quota_side_items().into_iter().map(|(index, h)| SideItem::Quota(index, h)));
         if self.t < self.notification_bell_until { items.push(SideItem::Bell); }

@@ -717,6 +717,7 @@ pub struct App {
     pub(crate) w: Spring,
     pub(crate) h: Spring,
     pub(crate) open: bool,
+    root_pointer_capture: bool,
     hover_since: Option<f64>,
     leave_since: Option<f64>,
     /// 前台切换导致的强制收起：光标离开前不再自动展开。
@@ -910,10 +911,14 @@ impl App {
         let (bw, bh) = if settings.minimal { (BAR_W_MIN, BAR_H_MIN) } else { (BAR_W, BAR_H) };
         let focus_seconds=settings.focus_minutes as f32*60.0;
         let initial_lyrics=settings.lyrics_enabled;
-        let initial_page=settings.page_order.iter().copied().find(|page|settings.visible_pages[*page]).unwrap_or(0);
+        let initial_page=settings.page_order.iter().copied().find(|page|crate::platform::page_available(*page)&&settings.visible_pages[*page])
+            .or_else(||(0..PAGE_NAMES.len()).find(|page|crate::platform::page_available(*page))).unwrap_or(0);
         let weather_source=crate::weather_source_ui::State::load();
         let mut weather=crate::weather::State::load(&settings.weather_city,settings.weather_position.as_ref());
         if weather_source.displayed==crate::weather_source_ui::Provider::Qweather {weather.snapshot=weather_source.runtime.snapshot();}
+        let mail=if crate::platform::page_available(MAIL_PAGE){MailState{accounts:mail::load_accounts(),..Default::default()}}else{MailState::default()};
+        let calendar=if crate::platform::page_available(CALENDAR_PAGE){CalendarState::load()}else{CalendarState::default()};
+        let quota=if crate::platform::page_available(QUOTA_PAGE){crate::quota_ui::State::load()}else{crate::quota_ui::State::default()};
         Self {
             opts,
             render_compat_running: settings.render_compat,
@@ -924,6 +929,7 @@ impl App {
             w: Spring::new(bw, CLOSE.0, CLOSE.1),
             h: Spring::new(bh, CLOSE.0, CLOSE.1),
             open: false,
+            root_pointer_capture: false,
             hover_since: None,
             leave_since: None,
             hover_lock: false,
@@ -1016,10 +1022,10 @@ impl App {
             music_restart_at: None,
             bt_shown: Vec::new(),
             bt_initialized: false,
-            mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
+            mail,
             mail_lines_cache: Vec::new(),
-            calendar: CalendarState::load(),
-            quota: crate::quota_ui::State::load(),
+            calendar,
+            quota,
             weather,
             weather_source,
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
@@ -1338,6 +1344,7 @@ impl App {
     /// 「测试连接失败」，方便在没有真实邮箱时验收失败路径。
     #[cfg(feature = "record")]
     pub fn mail_demo(&mut self) {
+        if !crate::platform::page_available(MAIL_PAGE) {return;}
         use mail::{Account, Item, Provider, Status};
         let mode = std::env::var("DAOZAI_MAIL_DEMO").unwrap_or_default();
         self.settings_tab = 7;
@@ -1426,6 +1433,7 @@ impl App {
     /// `DAOZAI_CAL_DEMO=paste|fail|connected|alert`。
     #[cfg(feature = "record")]
     pub fn calendar_demo(&mut self) {
+        if !crate::platform::page_available(CALENDAR_PAGE) {return;}
         use calendar::Provider;
         let mode = std::env::var("DAOZAI_CAL_DEMO").unwrap_or_default();
         self.calendar.form.provider = Provider::Feishu;
@@ -1521,6 +1529,7 @@ impl App {
     }
 
     pub fn show_page(&mut self,page:usize) {
+        if !crate::platform::page_available(page) {return;}
         if !self.settings.visible_pages[page] {
             self.settings_tab=PAGE_SETTINGS_TABS[page];
             self.open_settings();
@@ -1550,16 +1559,18 @@ impl App {
         self.settings_focus_requested=true;
     }
     pub fn open_settings_category(&mut self,category:usize){
+        if category>=3&&!crate::platform::local_reminder_settings_available(){return;}
         self.settings_category=category.min(3);
         self.health_time=false;
         if category==0 || category>=3 {self.settings_tab=if category==0{0}else{6};self.open_settings();return;}
         let page=if category==1{2}else{1};
         self.show_page(page);
-        if self.settings.visible_pages[page] && (category==1 || category==2) {self.subpage=Some(page);}
+        if self.module_on(page) && (category==1 || category==2) {self.subpage=Some(page);}
     }
     pub fn page(&self) -> usize {
         self.page
     }
+    pub fn captures_root_pointer(&self)->bool {self.root_pointer_capture}
     /// 打开健康提醒设置里的「提醒时段」二级页（演示录制用）。
     pub fn show_health_time(&mut self) { self.health_time = true; }
     /// 切到饮水页的久坐屏，并假定已连续久坐 minutes 分钟（演示录制用）。
@@ -1572,7 +1583,7 @@ impl App {
     // ---------- 功能模块：页面开关即模块开关，关闭后页面隐藏、后台同步和提醒一并停止 ----------
 
     /// 模块是否开启（与「页面管理」里的页面开关一致）。
-    pub fn module_on(&self,page:usize)->bool {self.settings.visible_pages.get(page).copied().unwrap_or(false)}
+    pub fn module_on(&self,page:usize)->bool {crate::platform::page_available(page)&&self.settings.visible_pages.get(page).copied().unwrap_or(false)}
     /// 收信线程是否应运行：邮箱模块开启且打开了「新邮件提醒」。
     pub fn mail_active(&self)->bool {self.module_on(MAIL_PAGE) && self.settings.mail_enabled}
     /// 剪贴板监听是否应运行：置物架模块开启且打开了「记录剪贴板」。
@@ -1583,6 +1594,7 @@ impl App {
     /// 合并后只保留模块开关：旧的内部开关关着时，迁移为模块关闭，内部开关恢复为开。
     /// 只剩这一个页面、模块关不掉时保持原样，不改变已有行为。
     pub fn migrate_merged_switches(&mut self){
+        if !crate::platform::page_available(MAIL_PAGE)||!crate::platform::page_available(QUOTA_PAGE){return;}
         let mut settings_changed=false;
         if !self.settings.mail_enabled {
             self.set_page_visible(MAIL_PAGE,false);
@@ -1596,13 +1608,14 @@ impl App {
     }
 
     pub(crate) fn set_page_visible(&mut self,page:usize,visible:bool) {
-        if !visible && self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1
+        if !crate::platform::page_available(page){return;}
+        if !visible && (0..PAGE_NAMES.len()).filter(|candidate|self.module_on(*candidate)).count()==1
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
         // 关掉专注模块时一并停止正在进行的计时，避免页面不可见却到点弹提醒。
         if !visible && page==FOCUS_PAGE {self.pomo.running=false;}
-        if !self.settings.visible_pages[self.page] {
-            if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
+        if !self.module_on(self.page) {
+            if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.module_on(*page)) { self.go(first,1.0); }
         }
     }
 
@@ -1610,7 +1623,7 @@ impl App {
         let position=self.settings.page_order.iter().position(|page|*page==self.page).unwrap();
         for offset in 1..=PAGE_NAMES.len() {
             let page=self.settings.page_order[(position+if next {offset}else{PAGE_NAMES.len()-offset})%PAGE_NAMES.len()];
-            if self.settings.visible_pages[page] {
+            if self.module_on(page) {
                 self.go(page,if next {1.0}else{-1.0});
                 break;
             }
@@ -1659,7 +1672,7 @@ impl App {
 
     /// 带过渡地切到某页。`dir` > 0 表示内容从右侧进入。
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
-        if page == self.page || !self.settings.visible_pages[page] { return; }
+        if page == self.page || !self.module_on(page) { return; }
         self.music_volume_open=false;
         self.subpage=None;
         // 连点：上一段过渡还没结束时，以当前页为起点重新开始，位移速度保留。
@@ -1706,7 +1719,7 @@ impl App {
 
     fn island_lyrics_active(&self)->bool {
         if self.side() {return false;}
-        self.settings.island_lyrics && self.settings.visible_pages[0] && self.media.is_music() && self.media.playing
+        self.settings.island_lyrics && self.module_on(MUSIC_PAGE) && self.media.is_music() && self.media.playing
             && !self.browser_minimal_active
     }
     pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
@@ -1896,11 +1909,11 @@ impl App {
         // ---------- 输入：拖放 ----------
         let (hovering_files, dropped) = ctx.input(|i| {
             (
-                self.settings.visible_pages[3] && !i.raw.hovered_files.is_empty(),
+                self.module_on(SHELF_PAGE) && !i.raw.hovered_files.is_empty(),
                 i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect::<Vec<_>>(),
             )
         });
-        if !dropped.is_empty() && self.settings.visible_pages[3] {
+        if !dropped.is_empty() && self.module_on(SHELF_PAGE) {
             self.on_drop(dropped);
             self.show_page(3);
         } else if hovering_files && !self.drag_hot {
@@ -1929,6 +1942,7 @@ impl App {
             && !ctx.input(|i|i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)));
         let page_hover=inside || self.page_scroll_area.is_some();
         let on_notice=env.cursor.is_some_and(|c|self.messenger_badge_rect(win,self.island_rect(win,self.w.pos,self.h.pos)).is_some_and(|r|r.contains(c)) || self.notice_rect(cx,top).is_some_and(|r|r.contains(c))||self.notice_details_rect(cx,top).is_some_and(|r|r.contains(c)));
+        self.root_pointer_capture=self.open || inside || on_notice || hovering_files || self.drag_hot || self.position_drag.is_some();
         if !inside {
             self.hover_lock = false;
         }
@@ -2270,7 +2284,7 @@ impl App {
             page_scroll_area:self.page_scroll_area.map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
-            file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height())} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
+            file_drop_zone:self.module_on(SHELF_PAGE).then(||rel(if side {self.island_rect(win,PW,self.expanded_height())} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
             expanded: self.open,
             editing: self.is_editing(),
             animating,
@@ -2613,7 +2627,7 @@ impl App {
                     if far+screen.width()*0.07<current {target=Some(opposite);}
                 }
                 let switch=target.is_some();
-                if let Some(dock)=target {self.settings.dock=dock;}
+                if !cfg!(target_os="macos"){if let Some(dock)=target {self.settings.dock=dock;}}
                 let (position,length,extent,start)=if self.side() {(cursor.y,screen.height(),crate::side_dock::SIDE_HALF_EXTENT,drag.start.y)}
                     else {(cursor.x,screen.width(),crate::display_layout::ISLAND_HALF_EXTENT,drag.start.x)};
                 let travel=(length/2.0-extent).max(0.0);
@@ -2916,7 +2930,7 @@ impl App {
         let hd = gx + battery_space;
         let hc = hd + date_w + 8.0;
         // 药丸起点布局
-        let has_music=self.media.is_music();
+        let has_music=crate::platform::page_available(MUSIC_PAGE)&&self.media.is_music();
         let layout=self.resident.current();
         let pb=(local_cx+layout.x[bar::BATTERY].unwrap_or(0.0),15.0);
         let pcx=layout.x[bar::CLOCK].map_or(hc,|x|local_cx+x-paint::clock_width(base,&clock,size::PILL_CLOCK)/2.0);
@@ -3105,7 +3119,7 @@ impl App {
     }
 
     fn nav(&mut self, c: &Card) {
-        let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.settings.visible_pages[*page]).collect();
+        let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.module_on(*page)).collect();
         if pages.len()<2 { return; }
         let arrow_y=if self.page==6||self.page==8{88.0}else{68.0};
         let l = c.hit(8.0, arrow_y-13.0, 26.0, 26.0, "nav-l");
@@ -3458,7 +3472,7 @@ impl App {
     }
 
     pub fn on_drop(&mut self, files: Vec<PathBuf>) {
-        if !self.settings.visible_pages[3] || files.is_empty() { return; }
+        if !self.module_on(SHELF_PAGE) || files.is_empty() { return; }
         self.drag_hot = false;
         self.drag_saved = None;
         if self.page != 3 {

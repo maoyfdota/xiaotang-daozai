@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 mod diagnostics;
 mod graphics;
+#[cfg(target_os="macos")]
+mod macos_shell;
 
 struct Shell {
     app: App,
@@ -27,7 +29,7 @@ struct Shell {
     _resource_monitor:Option<daozai::resources::Monitor>,
     resource_at:PollClock,
     guard_notified:bool,
-    media_enabled: smtc::Poller,
+    media_enabled: Option<smtc::Poller>,
     /// 刚点过播放控制或音量时，短时间内按最快频率采样，让按钮状态及时回显。
     media_fast_until: Option<Instant>,
     placed: bool,
@@ -35,6 +37,8 @@ struct Shell {
     placement_scale: f32,
     /// 上次定位时的目标屏幕、水平位置与 OLED 像素偏移；变化后立即重新定位，不等下一次轮询。
     placement_key: (String, i32, daozai::model::Dock, bool, (i32, i32)),
+    #[cfg(target_os="macos")]
+    mouse_passthrough: Option<bool>,
     /// OLED 像素偏移当前实际使用的位移；展开、拖拽、隐藏时保持不变。
     #[cfg(windows)]
     oled_shift: (i32, i32),
@@ -88,7 +92,7 @@ struct Shell {
     cal_sig: Option<(Vec<daozai::calendar::Config>, bool)>,
     /// 置物架模块开启且记录剪贴板时才监听系统剪贴板。
     clipboard_watch: Option<daozai::clipboard::Watcher>,
-    quota: daozai::quota::Service,
+    quota: Option<daozai::quota::Service>,
     quota_sig: Option<(bool,Vec<daozai::quota::Account>)>,
     quota_at: PollClock,
 }
@@ -143,10 +147,10 @@ impl Shell {
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
         diagnostics::startup("初始化额度配置");
-        if !quota_demo{app.quota_initialize();app.migrate_merged_switches();}
+        if !quota_demo && daozai::platform::page_available(app::QUOTA_PAGE) {app.quota_initialize();app.migrate_merged_switches();}
         diagnostics::startup("启动剪贴板记录");
         if std::env::args().any(|arg|arg=="--settings"){app.open_settings();}
-        if std::env::args().any(|arg|arg=="--calendar"){app.open_calendar(None);}
+        if daozai::platform::page_available(app::CALENDAR_PAGE)&&std::env::args().any(|arg|arg=="--calendar"){app.open_calendar(None);}
         #[cfg(feature="record")]
         if std::env::var("DAOZAI_MAIL_DEMO").is_ok(){app.mail_demo();}
         #[cfg(feature="record")]
@@ -155,8 +159,8 @@ impl Shell {
         if let Ok(mode)=std::env::var("DAOZAI_QUOTA_DEMO"){app.quota_demo(&mode);}
         diagnostics::startup("初始化媒体和托盘");
         let media = smtc::shared();
-        let media_enabled=smtc::spawn_poller(media.clone(),cc.egui_ctx.clone());
-        media_enabled.store(app.settings.visible_pages[0],std::sync::atomic::Ordering::Relaxed);
+        let media_enabled=daozai::platform::page_available(app::MUSIC_PAGE).then(||smtc::spawn_poller(media.clone(),cc.egui_ctx.clone()));
+        if let Some(poller)=&media_enabled {poller.store(app.module_on(app::MUSIC_PAGE),std::sync::atomic::Ordering::Relaxed);}
         #[cfg(windows)]
         let autostart = daozai::tray::autostart_enabled();
         #[cfg(windows)]
@@ -195,6 +199,8 @@ impl Shell {
             placement_at: PollClock::default(),
             placement_scale: 0.0,
             placement_key: (String::new(), 0, daozai::model::Dock::Top, true, (0, 0)),
+            #[cfg(target_os="macos")]
+            mouse_passthrough: None,
             #[cfg(windows)]
             oled_shift: (0, 0),
             win_x: 0.0,
@@ -229,7 +235,7 @@ impl Shell {
             cal: None,
             cal_sig: None,
             clipboard_watch: None,
-            quota: daozai::quota::Service::start(), quota_sig: None, quota_at: PollClock::default(),
+            quota: daozai::platform::page_available(app::QUOTA_PAGE).then(daozai::quota::Service::start), quota_sig: None, quota_at: PollClock::default(),
         }
     }
 
@@ -310,7 +316,10 @@ impl Shell {
             date,
             battery: self.sys.0,
             charging: self.sys.1,
-            network: Some(self.system_state.network),
+            network: {
+                #[cfg(windows)] {Some(self.system_state.network)}
+                #[cfg(not(windows))] {None}
+            },
             cursor,
             idle_seconds: {
                 #[cfg(windows)] {Some(daozai::system::idle_seconds())}
@@ -329,7 +338,10 @@ impl Shell {
                 #[cfg(not(windows))] {None}
             },
             media: self.media.lock().map(|m| m.clone()).unwrap_or_default(),
-            volume: self.system_state.volume,
+            volume: {
+                #[cfg(windows)] {self.system_state.volume}
+                #[cfg(not(windows))] {None}
+            },
             bt: self.bt.clone(),
             bt_ready: self.bt_ready,
             screen,
@@ -353,6 +365,11 @@ impl eframe::App for Shell {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os="macos")]
+        {
+            static FIRST_UPDATE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            FIRST_UPDATE.get_or_init(|| diagnostics::startup("macOS 首帧更新已进入"));
+        }
         daozai::resources::FRAMES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         let frame_start=Instant::now();
         if self.resource_at.ready(Duration::from_secs(30)){
@@ -368,11 +385,11 @@ impl eframe::App for Shell {
             self.guard_notified=true;self.app.opts.fetch_lyrics=false;
             self.app.alert("岛仔已暂停音乐功能","检测到资源占用异常，已暂停读取音乐信息和歌词。重启岛仔即可恢复；诊断记录在数据目录的 diagnostics 文件夹。",0,false);
         }
-        self.media_enabled.store(self.app.settings.visible_pages[0] && !guarded,std::sync::atomic::Ordering::Relaxed);
+        if let Some(poller)=&self.media_enabled {poller.store(self.app.module_on(app::MUSIC_PAGE) && !guarded,std::sync::atomic::Ordering::Relaxed);}
         if self.media_fast_until.is_some_and(|until|Instant::now()>=until){self.media_fast_until=None;}
-        self.media_enabled.set_interval(if self.media_fast_until.is_some(){smtc::POLL_FAST}else{self.app.media_poll_interval()});
+        if let Some(poller)=&self.media_enabled {poller.set_interval(if self.media_fast_until.is_some(){smtc::POLL_FAST}else{self.app.media_poll_interval()});}
         // 设置里改了岛体大小：下一帧起主窗口按新倍率栅格化，定位逻辑随像素比变化同步调整画布。
-        #[cfg(windows)] eframe::set_root_viewport_scale(self.app.settings.island_scale());
+        #[cfg(any(windows,target_os="macos"))] eframe::set_root_viewport_scale(self.app.settings.island_scale());
         #[cfg(windows)]
         if let Some(start)=_frame.interactive_frame_start {
             self.frame_at=start;
@@ -419,7 +436,41 @@ impl eframe::App for Shell {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os="macos")]
+        {
+            let offset=self.app.placement_offset();
+            let dock=daozai::model::Dock::Right;
+            let placement_key=(self.app.settings.display_id.clone(),(offset*10000.0).round() as i32,dock,true,(0,0));
+            let timed_out=self.placement_at.ready(Duration::from_secs(1));
+            if !self.placed || self.placement_scale!=ctx.pixels_per_point() || self.placement_key!=placement_key || timed_out {
+                self.app.displays=macos_shell::connected();
+                self.placement_at=PollClock::now();
+                self.placement_scale=ctx.pixels_per_point();
+                self.placement_key=placement_key;
+                let display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
+                let position=display.and_then(|display|{
+                    let bounds=daozai::display_layout::placement_bounds(display,true);
+                    let origin=daozai::display_layout::side_origin(
+                        bounds,
+                        dock,
+                        (daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H),
+                        daozai::side_dock::SIDE_HALF_EXTENT,
+                        self.placement_scale,
+                        offset,
+                    )?;
+                    macos_shell::logical_position(&display.id,origin)
+                });
+                if let Some(position)=position {
+                    self.win_x=position.x;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
+                    self.placed=true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }else if self.t0.elapsed()>=Duration::from_secs(2){
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
+            }
+        }
+        #[cfg(all(not(windows),not(target_os="macos")))]
         if !self.placed {
             if let Some(mon)=ctx.input(|i|i.viewport().monitor_size) {
                 self.placed=true;self.win_x=((mon.x-app::WIN_W)/2.0).round();
@@ -584,25 +635,38 @@ impl eframe::App for Shell {
         }
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
-        if !quota_demo {
+        if !quota_demo && daozai::platform::page_available(app::QUOTA_PAGE) {
+            if let Some(quota)=&mut self.quota {
             let (active,config)=(self.app.quota_active(),self.app.quota_config());
             if !self.quota_sig.as_ref().is_some_and(|known|quota_sig_matches(known,active,config)) || self.quota_at.ready(Duration::from_secs(180)){
                 let sig=quota_sig(active,config);
                 let accounts:Vec<_>=sig.1.iter().filter(|a|sig.0 && a.enabled).cloned().collect();
-                if self.quota.refresh(accounts.clone()){self.app.quota_pending(&accounts);self.quota_sig=Some(sig);self.quota_at=PollClock::now();}
+                if quota.refresh(accounts.clone()){self.app.quota_pending(&accounts);self.quota_sig=Some(sig);self.quota_at=PollClock::now();}
             }
-            while let Some(ev)=self.quota.try_recv(self.app.quota_config()){self.app.quota_event(ev);}
+            while let Some(ev)=quota.try_recv(self.app.quota_config()){self.app.quota_event(ev);}
+            }
         }
         let mut out = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 // 左右停靠时画布是竖向的 SIDE_W × SIDE_H。
-                let size=if self.app.settings.dock.is_side() {egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)} else {egui::vec2(app::WIN_W,app::WIN_H)};
+                let side=cfg!(target_os="macos") || self.app.settings.dock.is_side();
+                let size=if side {egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)} else {egui::vec2(app::WIN_W,app::WIN_H)};
                 let win = egui::Rect::from_min_size(ui.max_rect().min,size);
                 out = Some(self.app.frame(ui, win, &env));
             });
         let Some(out) = out else { return };
+
+        #[cfg(target_os="macos")]
+        {
+            let pass_through=!self.app.captures_root_pointer();
+            if self.mouse_passthrough!=Some(pass_through){
+                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(pass_through));
+                self.mouse_passthrough=Some(pass_through);
+            }
+            if !out.expanded {ctx.request_repaint_after(Duration::from_millis(50));}
+        }
 
         #[cfg(windows)]
         {
@@ -666,7 +730,8 @@ impl eframe::App for Shell {
         for cmd in out.cmds {
             match cmd {
                 Cmd::Media(t) => {
-                    self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));self.media_enabled.set_interval(smtc::POLL_FAST);
+                    self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));
+                    if let Some(poller)=&self.media_enabled {poller.set_interval(smtc::POLL_FAST);}
                     let source=self.media.lock().map(|media|media.source.clone()).unwrap_or_default();
                     let message=if source.eq_ignore_ascii_case("cloudmusic.exe"){"网易云暂未适配进度跳转，请在客户端调整"}
                         else if source.eq_ignore_ascii_case("bodian_pc.exe"){"波点音乐暂未适配进度跳转，请在客户端调整"}
@@ -678,7 +743,8 @@ impl eframe::App for Shell {
                     }
                 }
                 Cmd::MusicVolume(command,source)=>{
-                    self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));self.media_enabled.set_interval(smtc::POLL_FAST);
+                    self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));
+                    if let Some(poller)=&self.media_enabled {poller.set_interval(smtc::POLL_FAST);}
                     if self.media_control.is_none(){self.media_control=smtc::ControlWorker::start(ctx.clone());}
                     match self.media_control.as_ref().ok_or(()).and_then(|worker|worker.submit(command,source.clone())){
                         Ok(Some(rx))=>self.music_volume_rx=Some((source,rx)),
@@ -721,7 +787,7 @@ impl eframe::App for Shell {
                 Cmd::Open(p) => {if let Err(e)=open_path(&p){self.app.say(e);}},
                 Cmd::OpenUrl(url)=>{
                     if let Some(url)=daozai::mail::web_url(&url) {
-                        if open_path(std::path::Path::new(&url)).is_err(){self.app.say("无法打开默认浏览器，请检查 Windows 默认应用设置");}
+                        if open_path(std::path::Path::new(&url)).is_err(){self.app.say("无法打开默认浏览器，请检查默认应用设置");}
                     }
                 },
                 Cmd::CalendarImport=>{
@@ -745,15 +811,15 @@ impl eframe::App for Shell {
                     ctx.input_mut(|i| i.pointer=Default::default());
                 },
                 Cmd::DisconnectNotifications=>{#[cfg(windows)]{self.incoming=None;self.app.settings.read_notifications=false;self.app.settings.save();self.app.listener_status="已断开，不再读取 Windows 通知".into();}},
-                Cmd::Reveal(p)=>{let _=daozai::child_process::spawn(std::process::Command::new("explorer.exe").arg(format!("/select,{}",p.display())));},
+                Cmd::Reveal(p)=>{#[cfg(windows)] {let _=daozai::child_process::spawn(std::process::Command::new("explorer.exe").arg(format!("/select,{}",p.display())));}},
                 Cmd::QuotaChooseFile=>{
                     #[cfg(windows)] match daozai::system::pick_files_for("选择 AI 账号的登录 JSON 文件",false){Ok(files)=>if let Some(path)=files.into_iter().next(){self.app.quota_set_source(path);},Err(_)=>self.app.say("无法选择登录文件")}
                 },
                 Cmd::QuotaRefresh=>{
-                    if self.quota_at.ready(Duration::from_secs(15)) {
+                    if let Some(quota)=&mut self.quota { if self.quota_at.ready(Duration::from_secs(15)) {
                         let (active,config)=(self.app.quota_active(),self.app.quota_config());let accounts:Vec<_>=config.accounts.iter().filter(|a|active && a.enabled).cloned().collect();
-                        if self.quota.refresh(accounts.clone()){self.app.quota_pending(&accounts);self.quota_at=PollClock::now();}
-                    }else{self.app.say("请稍后再刷新");}
+                        if quota.refresh(accounts.clone()){self.app.quota_pending(&accounts);self.quota_at=PollClock::now();}
+                    }else{self.app.say("请稍后再刷新");} }
                 },
                 Cmd::QuotaConnected=>{self.quota_sig=None;},
                 Cmd::ToggleAutostart=>{
@@ -786,6 +852,8 @@ impl eframe::App for Shell {
                 },
                 Cmd::MailTest(account,password)=>match &self.mail {Some(mail)=>mail.test(account,password),None=>self.app.say(MODULE_OFF)},
                 Cmd::MailManage(request)=>match &self.mail {Some(mail)=>mail.manage(request),None=>self.app.say(MODULE_OFF)},
+                Cmd::CalendarTest(..)|Cmd::CalendarSync|Cmd::CalendarMonth(_)|Cmd::CalendarForget
+                    if !daozai::platform::page_available(app::CALENDAR_PAGE)=>{},
                 Cmd::CalendarTest(cfg,password)=>match &self.cal {Some(cal)=>cal.test(cfg,password),None=>self.app.say(MODULE_OFF)},
                 Cmd::CalendarSync=>match &self.cal {Some(cal)=>cal.sync_now(),None=>self.app.say(MODULE_OFF)},
                 Cmd::CalendarMonth(month)=>if let Some(cal)=&self.cal {cal.view_month(month);},
@@ -926,7 +994,15 @@ fn local_now() -> (String, String, String) {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os="macos")]
+fn local_now() -> (String, String, String) {
+    use chrono::Datelike;
+    let now=chrono::Local::now();
+    let weekday=["周一","周二","周三","周四","周五","周六","周日"][now.weekday().num_days_from_monday() as usize];
+    (now.format("%H:%M:%S").to_string(),now.format("%Y-%m-%d").to_string(),format!("{}月{}日 {weekday}",now.month(),now.day()))
+}
+
+#[cfg(all(not(windows),not(target_os="macos")))]
 fn local_now() -> (String, String, String) {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
@@ -959,7 +1035,10 @@ fn cursor_logical(ppp: f32) -> Option<(f32, f32)> {
     Some((p.x as f32 / ppp, p.y as f32 / ppp))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os="macos")]
+fn cursor_logical(_ppp:f32)->Option<(f32,f32)>{macos_shell::cursor_logical()}
+
+#[cfg(all(not(windows),not(target_os="macos")))]
 fn cursor_logical(_ppp: f32) -> Option<(f32, f32)> {
     None
 }
@@ -991,7 +1070,13 @@ fn open_path_result(p:&std::path::Path,result:windows::core::Result<()>,choose:i
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os="macos")]
+fn open_path(p:&std::path::Path)->Result<(),String>{
+    let status=std::process::Command::new("open").arg(p).status().map_err(|_|"无法打开文件或链接，请检查目标位置".to_owned())?;
+    if status.success(){Ok(())}else{Err("无法打开文件或链接，请检查目标位置".into())}
+}
+
+#[cfg(all(not(windows),not(target_os="macos")))]
 fn open_path(_p: &std::path::Path)->Result<(),String> {Ok(())}
 
 #[cfg(all(test,windows))]
@@ -1071,16 +1156,21 @@ fn run() -> eframe::Result<()> {
     #[cfg(windows)]
     std::thread::spawn(daozai::record_install_size);
     diagnostics::startup("初始化图形窗口");
+    let inner_size=if cfg!(target_os="macos") {
+        [daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H]
+    } else {
+        [app::CANVAS_W,app::WIN_H]
+    };
     let viewport = egui::ViewportBuilder::default()
         .with_title("岛仔").with_icon(daozai::theme::app_icon())
-        .with_inner_size([app::CANVAS_W, app::WIN_H])
+        .with_inner_size(inner_size)
         .with_decorations(false)
         .with_transparent(true)
-        .with_active(false)
+        .with_active(cfg!(target_os="macos"))
         .with_resizable(false)
         .with_taskbar(false)
         .with_always_on_top()
-        .with_visible(false);
+        .with_visible(cfg!(target_os="macos"));
     let opts = eframe::NativeOptions { viewport, vsync: !cfg!(windows), ..Default::default() };
     graphics::run(opts,|opts|eframe::run_native("岛仔", opts, Box::new(|cc| Ok(Box::new(Shell::new(cc))))))
 }

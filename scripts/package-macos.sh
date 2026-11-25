@@ -44,7 +44,7 @@ chmod 755 "$APP_STAGING/Contents/MacOS/daozai"
 create_icon() {
     local filename="$1"
     local pixels="$2"
-    local artwork_pixels=$((pixels * 9 / 10))
+    local artwork_pixels=$((pixels * 3 / 4))
     local artwork="$TEMP_DIR/$filename"
     sips -z "$artwork_pixels" "$artwork_pixels" "$ICON_SOURCE" --out "$artwork" >/dev/null
     sips -p "$pixels" "$pixels" "$artwork" --out "$ICONSET_DIR/$filename" >/dev/null

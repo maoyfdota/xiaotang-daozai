@@ -1,17 +1,153 @@
 //! 经典蓝牙与低功耗蓝牙设备的连接状态和电量。
 
 use std::time::{Duration,Instant};
+pub mod management;
+#[cfg(target_os="macos")]
+mod macos;
+pub(crate) mod low_battery;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Device {
     pub id: String,
     pub name: String,
     pub battery: Option<u8>,
     pub kind: DeviceKind,
+    pub connection: ConnectionState,
+    pub battery_status: BatteryStatus,
+    /// 同一次读取跨帧复用序号；只有 Valid 读数可以驱动低电量周期。
+    pub battery_observation: u64,
+    pub connect: Capability,
+    pub disconnect: Capability,
+    /// 系统接口与实体身份的关联，供跨来源合并和电量匹配使用。
+    pub endpoints: Vec<Endpoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Endpoint {
+    pub system_id: String,
+    pub address: Option<String>,
+    pub container: Option<String>,
+}
+
+/// 接受完整的 48 位地址，避免把名称或系统 ID 后缀误认为设备地址。
+fn normalize_address(value: &str) -> Option<String> {
+    let address: String = value.chars().filter(|c| *c != ':' && *c != '-').collect();
+    (address.len() == 12
+        && address.bytes().all(|c| c.is_ascii_hexdigit())
+        && address != "000000000000")
+        .then(|| address.to_ascii_uppercase())
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeviceKind {
+    Bone,
+    Earbuds,
+    Headphones,
+    Speaker,
+    Keyboard,
+    Mouse,
+    Gamepad,
+    Phone,
+    #[default]
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnectionState {
+    Connected,
+    Disconnected,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BatteryStatus {
+    Valid,
+    #[default]
+    Unknown,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Capability {
+    Available,
+    Unavailable(String),
+    /// 尚未验证对应设备接口时使用系统设置回退。
+    #[default]
+    Unverified,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ScanStatus {
+    #[default]
+    Loading,
+    Ready,
+    Partial(String),
+    Unavailable(String),
+    PermissionRequired(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    /// 在同一个 Service 生命周期内单调递增。
+    pub version: u64,
+    pub devices: Vec<Device>,
+    pub status: ScanStatus,
+}
+
+impl Snapshot {
+    pub fn ready(version: u64, devices: Vec<Device>) -> Self {
+        Self {
+            version,
+            devices,
+            status: ScanStatus::Ready,
+        }
+    }
+
+    pub fn complete(&self) -> bool {
+        self.status == ScanStatus::Ready
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeviceKind { Bone, Earbuds, Headphones, Speaker, Keyboard, Mouse, Gamepad, Phone, Other }
+pub enum Action {
+    Connect,
+    Disconnect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub id: u64,
+    pub device_id: String,
+    pub action: Action,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Refresh,
+    Control(Request),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationStatus {
+    Accepted,
+    Succeeded,
+    Failed(String),
+    TimedOut,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationResult {
+    pub request: Request,
+    pub status: OperationStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Snapshot(Snapshot),
+    Operation(OperationResult),
+}
+
 
 fn device_kind(name: &str, classic: bool, class: Option<u32>) -> DeviceKind {
     use DeviceKind::*;
@@ -45,6 +181,9 @@ fn device_kind(name: &str, classic: bool, class: Option<u32>) -> DeviceKind {
 
 impl Device {
     /// 通知条正文：`名称 · 电量 80%`，设备没上报电量时只写名称。
+    pub fn valid_battery(&self) -> Option<u8> {
+        self.battery.filter(|level| self.battery_status == BatteryStatus::Valid && *level <= 100)
+    }
     pub fn summary(&self) -> String {
         match self.battery {
             Some(b) => format!("{} · 电量 {b}%", self.name),
@@ -129,7 +268,7 @@ fn query(cache:&mut Cache) -> Result<Vec<Device>, ()> {
                 };
                 device_kind(&name,classic,class)
             };
-            devices.push(Device { id: address, kind, name, battery: None });
+            devices.push(Device { id: address, kind, name, battery: None, ..Default::default() });
         }
     }
     devices.sort_by(|a,b|a.id.cmp(&b.id));
@@ -206,7 +345,7 @@ unsafe fn byte_prop(
 mod tests {
     use super::*;
 
-    fn device(id:&str)->Device {Device{id:id.into(),name:id.into(),battery:None,kind:DeviceKind::Mouse}}
+    fn device(id:&str)->Device {Device{id:id.into(),name:id.into(),battery:None,kind:DeviceKind::Mouse,..Default::default()}}
 
     #[test]
     fn idle_bluetooth_does_not_rescan_all_hardware_every_two_seconds(){
@@ -244,7 +383,7 @@ mod tests {
 
     #[test]
     fn summary_omits_missing_battery() {
-        let d = Device { id: "1".into(), name: "Headset".into(), battery: None, kind: DeviceKind::Headphones };
+        let d = Device { id: "1".into(), name: "Headset".into(), battery: None, kind: DeviceKind::Headphones, ..Default::default() };
         assert_eq!(d.summary(), "Headset");
         let d = Device { battery: Some(80), ..d };
         assert_eq!(d.summary(), "Headset · 电量 80%");

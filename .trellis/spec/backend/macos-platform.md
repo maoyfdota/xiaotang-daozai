@@ -21,8 +21,8 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 
 ### Capabilities
 
-- macOS exposes focus, water/sit reminders, to-do, and Open-Meteo weather.
-- macOS hides Music, Shelf, Mail, AI quota, Calendar, QWeather credentials, Windows notification delivery, Bluetooth, Windows system status, startup, and foreground-window avoidance controls.
+- macOS exposes focus, water/sit reminders, to-do, Open-Meteo weather, and the approved Bluetooth management page (ID 9).
+- macOS hides Music, Shelf, Mail, AI quota, Calendar, QWeather credentials, Windows notification delivery, Windows system status, startup, and foreground-window avoidance controls.
 - `page_available` is the source of truth for navigation, settings, direct page entry, reminders, and optional service startup.
 - Hidden persisted values remain serialized and unchanged. Startup must not migrate or initialize hidden feature settings or credentials.
 - The local-reminder master switch remains available for supported local reminders.
@@ -103,3 +103,12 @@ if platform::page_available(page) && settings.visible_pages[page] {
 ```
 
 Use the same capability check for navigation, settings visibility, reminders, and service reconciliation so an unavailable page cannot be reached through a secondary entry point.
+
+## Bluetooth extension (2026-11-25)
+
+- Mac Bluetooth management and its independent reminder switches use native capability and permission states, not the Windows notification-controls gate.
+- Keep Windows legacy Bluetooth service consumers compatible. Append page ID 9 without changing existing page IDs or hidden persisted values.
+- Use a packaged NSBluetoothAlwaysUsageDescription before requesting access. Denied permission is not an empty device list.
+- Device operations run on bounded background workers; actual state confirms success and UI deadlines remain responsive. Keyboard disconnect requires confirmation.
+- Unknown/failed battery is never zero; only new valid observations drive <=20% cycles. Persist dedup only after actual banner display.
+- Do not merge device identity by name or infer authoritative removal from an incomplete source.

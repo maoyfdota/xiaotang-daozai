@@ -31,6 +31,19 @@ impl HealthReminder {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct BluetoothAlert {
+    pub id: String,
+    pub kind: crate::bt::DeviceKind,
+    pub event: BluetoothAlertKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BluetoothAlertKind {
+    Connection(bool),
+    LowBattery(u64),
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Alert {
     pub title: String,
     pub source: AlertSource,
@@ -38,13 +51,28 @@ pub(crate) struct Alert {
     pub page: usize,
     pub at: f64,
     pub duration: f64,
-    pub bluetooth: Option<(crate::bt::DeviceKind, bool)>,
+    pub bluetooth: Option<BluetoothAlert>,
     pub meeting: Option<(crate::mail::Meeting, String)>,
     pub unread: Option<crate::app::Unread>,
 }
 impl Alert {
+    pub(crate) fn bluetooth_low_battery(&self) -> Option<(&str, u64)> {
+        let bluetooth = self.bluetooth.as_ref()?;
+        match bluetooth.event {
+            BluetoothAlertKind::LowBattery(cycle) => Some((&bluetooth.id, cycle)),
+            BluetoothAlertKind::Connection(_) => None,
+        }
+    }
+
+    pub(crate) fn bluetooth_connection(&self) -> Option<(crate::bt::DeviceKind, bool)> {
+        let bluetooth = self.bluetooth.as_ref()?;
+        match bluetooth.event {
+            BluetoothAlertKind::Connection(connected) => Some((bluetooth.kind, connected)),
+            BluetoothAlertKind::LowBattery(_) => None,
+        }
+    }
     pub(crate) fn health(&self)->Option<HealthReminder> {
-        if self.source!=AlertSource::Internal{return None;}
+        if self.source!=AlertSource::Internal || self.bluetooth.is_some(){return None;}
         HealthReminder::ALL.into_iter().find(|kind|self.title==kind.title())
     }
     pub(crate) fn messenger(&self)->Option<crate::app::Messenger>{
@@ -54,7 +82,7 @@ impl Alert {
             _=>None,
         }
     }
-    pub(crate) fn is_hud(&self)->bool {self.source==AlertSource::Internal && matches!(self.title.as_str(),"系统音量"|"大写锁定"|"键盘输入语言"|"网络连接"|"电源已连接"|"已切换电池供电"|"蓝牙设备")}
+    pub(crate) fn is_hud(&self)->bool {self.source==AlertSource::Internal && self.bluetooth_low_battery().is_none() && matches!(self.title.as_str(),"系统音量"|"大写锁定"|"键盘输入语言"|"网络连接"|"电源已连接"|"已切换电池供电"|"蓝牙设备")}
 }
 fn bluetooth_notice_content(body:&str)->(&str,&str,Option<u8>){
     if let Some(name)=body.strip_suffix(" · 已断开") {return (name,"已断开",None);}
@@ -91,7 +119,7 @@ pub(crate) use crate::pet::PetState;
 pub(crate) fn notice_badge(c:&Card,x:f32,y:f32,a:&Alert){
     if a.source==AlertSource::Internal && a.title=="蓝牙设备"{
         c.circle(x,y,11.0,if a.body.contains("已断开"){Color32::from_gray(95)}else{theme::BLUE});
-        device_icon(c,a.bluetooth.map_or(crate::bt::DeviceKind::Other,|v|v.0),x-7.5,y-7.5,15.0);
+        device_icon(c,a.bluetooth.as_ref().map_or(crate::bt::DeviceKind::Other,|v|v.kind),x-7.5,y-7.5,15.0);
     }else{notice_icon(&c.scaled(x,y,0.85),x,y,a);}
 }
 pub(crate) fn messenger_icon(c:&Card,x:f32,y:f32,source:crate::app::Messenger){(source.adapter().paint_icon)(c,x,y);}
@@ -277,12 +305,78 @@ impl App {
             title: "蓝牙设备".into(),
             body: if connected { device.summary() } else { format!("{} · 已断开", device.name) },
             page: 5, at: self.t, duration: 2.5,
-            bluetooth: Some((device.kind, connected)),
+            bluetooth: Some(BluetoothAlert { id: device.id.clone(), kind: device.kind, event: BluetoothAlertKind::Connection(connected) }),
             meeting: None,
             unread: None,
         };
         self.enqueue_alert(a, false);
     }
+
+    pub(crate) fn sync_bluetooth_alert_setting(&mut self) {
+        self.bt_low_battery.set_enabled(
+            self.settings.notifications && self.settings.bluetooth_low_battery_notifications,
+            &self.bluetooth,
+        );
+    }
+
+    pub(crate) fn save_bluetooth_alerts(&mut self) {
+        if self.bt_low_battery.take_dirty() { self.bt_alert_store.mark_dirty(); }
+        self.bt_alert_store.flush(self.bt_low_battery.shown(), self.t);
+    }
+
+    fn bluetooth_low_battery_body(device: &crate::bt::Device) -> String {
+        format!("电量 {}%，请及时充电", device.valid_battery().unwrap_or(0))
+    }
+
+    fn sync_bluetooth_low_battery_alerts(&mut self) {
+        self.sync_bluetooth_alert_setting();
+        let allowed = |alert: &Alert| {
+            let Some((id, cycle)) = alert.bluetooth_low_battery() else { return true; };
+            !self.bt_alert_hidden && self.bluetooth.devices.iter()
+                .any(|device| device.id == id && self.bt_low_battery.valid(device, cycle))
+        };
+        self.alerts.retain(&allowed);
+        if self.notice.as_ref().is_some_and(|alert| !allowed(alert)) { self.notice = None; }
+        if self.hud_notice.as_ref().is_some_and(|alert| !allowed(alert)) { self.hud_notice = None; }
+        // 排队期间改名或取得更低读数时，展示当前名称和电量。
+        for alert in self.alerts.iter_mut().chain(self.notice.iter_mut()).chain(self.hud_notice.iter_mut()) {
+            if let Some((id, _)) = alert.bluetooth_low_battery() {
+                if let Some(device) = self.bluetooth.devices.iter().find(|device| device.id == id) {
+                    alert.title.clone_from(&device.name);
+                    alert.body = Self::bluetooth_low_battery_body(device);
+                    if let Some(bluetooth) = &mut alert.bluetooth { bluetooth.kind = device.kind; }
+                }
+            }
+        }
+        if !self.bt_alert_hidden {
+            let candidates: Vec<_> = self.bluetooth.devices.iter().filter_map(|device| {
+                self.bt_low_battery.candidate(device).map(|cycle| (device.clone(), cycle))
+            }).collect();
+            for (device, cycle) in candidates {
+                if self.alerts.len() >= 8 { break; }
+                let pending = self.alerts.iter().chain(self.notice.iter()).chain(self.hud_notice.iter())
+                    .any(|alert| alert.bluetooth_low_battery() == Some((device.id.as_str(), cycle)));
+                if pending { continue; }
+                self.enqueue_alert(Alert {
+                    source: AlertSource::Internal,
+                    title: device.name.clone(),
+                    body: Self::bluetooth_low_battery_body(&device),
+                    page: crate::app::BLUETOOTH_PAGE,
+                    at: self.t,
+                    duration: 8.0,
+                    bluetooth: Some(BluetoothAlert {
+                        id: device.id,
+                        kind: device.kind,
+                        event: BluetoothAlertKind::LowBattery(cycle),
+                    }),
+                    meeting: None,
+                    unread: None,
+                }, false);
+            }
+        }
+        self.save_bluetooth_alerts();
+    }
+
     fn enqueue_alert(&mut self, a: Alert, system: bool) {
         // 通知仅保存在本次运行的内存中。
         if a.source==AlertSource::Internal {self.history.push_front(a.clone());}
@@ -295,9 +389,13 @@ impl App {
                     else { NotificationSound::System };
                 self.pending.push(Cmd::Notify(a.title.clone(), a.body.clone(), sound));
             }
-            let same_event=|old:&Alert| match (&a.meeting,&old.meeting) {
+            let same_event=|old:&Alert| match (&a.bluetooth,&old.bluetooth) {
+                (Some(next),Some(previous))=>next.id==previous.id && next.event==previous.event,
+                (Some(_),None)|(None,Some(_))=>false,
+                (None,None)=>match (&a.meeting,&old.meeting) {
                 (Some((next,_)),Some((previous,_)))=>crate::calendar::dedupe_key(next)==crate::calendar::dedupe_key(previous),
                 _=>old.source==a.source && old.title==a.title && old.unread==a.unread && (a.is_hud() || old.body==a.body),
+                },
             };
             if a.source!=AlertSource::Internal || a.title != "蓝牙设备" { self.alerts.retain(|old| !same_event(old)); }
             if (a.source!=AlertSource::Internal || a.title != "蓝牙设备") && self.notice.as_ref().is_some_and(same_event) {
@@ -408,6 +506,7 @@ impl App {
         self.notification_bell_at=self.t;self.notification_bell_until=self.t+4.5;
     }
     pub(crate) fn tick_alerts(&mut self) {
+        self.sync_bluetooth_low_battery_alerts();
         self.pending_messengers.retain(|u|u.source.enabled(&self.settings) && (u.source.adapter().capture!=crate::messenger::Capture::SystemToast
             || self.notification_apps.items.iter().any(|(key,_,on)|key==u.source.adapter().notification_id && *on)));
         let allowed=|a:&Alert|match &a.source {
@@ -442,6 +541,29 @@ impl App {
     }
     pub(crate) fn draw_notice(&mut self, c:&Card,panel:Rect,a:&Alert,_cmds:&mut Vec<Cmd>){
         let nc=c.clipped(0.0,0.0,panel.width(),panel.height());
+        if let Some((id, cycle)) = a.bluetooth_low_battery() {
+            let device = self.bluetooth.devices.iter().find(|device| device.id == id).cloned();
+            let Some(device) = device.filter(|device| {
+                !self.bt_alert_hidden && self.settings.notifications
+                    && self.settings.bluetooth_low_battery_notifications
+                    && self.bt_low_battery.valid(device, cycle)
+            }) else { return; };
+            nc.circle(22.0,22.0,13.0,theme::BLUE);
+            device_icon(&nc,device.kind,13.0,13.0,18.0);
+            nc.centered_text(43.0,14.0,&nc.fit(&device.name,11.0,W::Semibold,195.0),11.0,W::Semibold,theme::WHITE,H::Left);
+            nc.centered_text(43.0,30.0,&Self::bluetooth_low_battery_body(&device),10.5,W::Regular,theme::RED,H::Left);
+            if notice_button(&nc,257.0,12.0,60.0,"查看","bluetooth-battery-view") {
+                self.show_page(crate::app::BLUETOOTH_PAGE);
+            }
+            // 面板展开、裁剪或全透明时尚未真正展示，保留再次入队的资格。
+            if nc.painter.is_visible() && nc.painter.opacity() >= 0.85
+                && nc.painter.clip_rect().contains_rect(nc.rect(43.0,5.0,195.0,34.0))
+            {
+                self.bt_low_battery.mark_shown(&device, cycle);
+                self.save_bluetooth_alerts();
+            }
+            return;
+        }
         if let Some(source)=a.messenger(){
             messenger_icon(&nc,22.0,22.0,source);
             nc.circle(31.0,14.0,2.6,Color32::from_rgb(255,72,72));
@@ -501,7 +623,7 @@ impl App {
             if a.title=="蓝牙设备" {
                 let (name,status,battery)=bluetooth_notice_content(&a.body);
                 nc.circle(26.0,24.0,14.0,if status=="已连接"{Color32::from_rgb(10,132,255)}else{Color32::from_gray(95)});
-                let kind=a.bluetooth.map(|(kind,_)|kind).unwrap_or(crate::bt::DeviceKind::Other);
+                let kind=a.bluetooth.as_ref().map(|bt|bt.kind).unwrap_or(crate::bt::DeviceKind::Other);
                 device_icon(&nc,kind,17.0,15.0,18.0);
                 let right=HUD_W-14.0;
                 let name_end=if let Some(level)=battery {
@@ -736,7 +858,7 @@ mod tests {
 
     #[test]
     fn settings_groups_keep_every_page_reachable() {
-        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置"];
+        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "蓝牙"];
         for (tab, expected) in groups.iter().enumerate() {
             let matches: Vec<_> = SETTINGS_GROUPS.iter().filter(|(_,start,end,_)| (*start..=*end).contains(&tab)).collect();
             assert_eq!(matches.len(), 1, "页面 {tab} 必须且只能属于一个分组");
@@ -1267,6 +1389,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
         MAIL_PAGE=>("mail",include_bytes!("../assets/settings-icons/system/mail.svg")),
         QUOTA_PAGE=>("quota",include_bytes!("../assets/settings-icons/system/quota.svg")),
         CALENDAR_PAGE=>("calendar",include_bytes!("../assets/settings-icons/system/calendar.svg")),
+        BLUETOOTH_PAGE=>("bluetooth",include_bytes!("../assets/device-icons/bluetooth-linear.svg")),
         _=>("weather",include_bytes!("../assets/settings-icons/system/weather.svg")),
     };
     egui::ImageSource::Bytes{uri:format!("bytes://settings-header-{name}.svg").into(),bytes:bytes.into()}
@@ -1276,7 +1399,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
 #[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),_=>None}
+    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(BLUETOOTH_PAGE),_=>None}
 }
 
 pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
@@ -1411,9 +1534,9 @@ pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);13] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);14] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
-    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""),
+    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("蓝牙",15,15,""),
     ("关于",9,9,""),
 ];
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
@@ -1432,7 +1555,7 @@ impl App {
         let (mut enable,mut open)=(false,false);
         settings_card(ui,|ui|{
             ui.horizontal(|ui|{
-                ui.add(egui::Image::new(settings_page_icon(page)).fit_to_exact_size(egui::vec2(36.0,36.0)));
+                ui.add(egui::Image::new(settings_page_icon(page)).tint(if page==crate::app::BLUETOOTH_PAGE{theme::BLUE}else{Color32::WHITE}).fit_to_exact_size(egui::vec2(36.0,36.0)));
                 ui.add_space(4.0);
                 ui.vertical(|ui|{
                     ui.spacing_mut().item_spacing.y=2.0;
@@ -1446,7 +1569,8 @@ impl App {
                 });
             });
             if !on {
-                ui.label(egui::RichText::new(format!("「{}」已关闭，不会在后台同步或提醒",PAGE_NAMES[page])).size(12.0).color(settings_color(ctx,Color32::from_rgb(238,181,91),Color32::from_rgb(139,88,12))));
+                let hidden=if page==crate::app::BLUETOOTH_PAGE {"蓝牙页面已隐藏，设备状态持续更新，提醒由各自开关控制".to_owned()}else{format!("「{}」已关闭，不会在后台同步或提醒",PAGE_NAMES[page])};
+                ui.label(egui::RichText::new(hidden).size(12.0).color(settings_color(ctx,Color32::from_rgb(238,181,91),Color32::from_rgb(139,88,12))));
             }
         });
         if enable {self.set_page_visible(page,true);}
@@ -1456,6 +1580,11 @@ impl App {
             else {if page==crate::app::SHELF_PAGE {self.shelf_tab=0;} self.show_page(page);}
         }
         self.module_on(page)
+    }
+    fn bluetooth_reminder_settings(&mut self,ui:&mut egui::Ui){
+        setting_row(ui,"蓝牙连接提醒","连接与断开时提醒，隐藏蓝牙页后仍可提醒",&mut self.settings.bluetooth_notifications);
+        ui.separator();
+        setting_row(ui,"蓝牙低电量提醒","电量不高于 20% 时提醒，每轮提醒一次",&mut self.settings.bluetooth_low_battery_notifications);
     }
     pub fn settings_ui(&mut self,ctx:&egui::Context,autostart:bool){
         if !self.settings_open{self.window_layout().close();release_support_codes(ctx);self.weather_source.close();}
@@ -1521,6 +1650,7 @@ impl App {
                         4=>egui::include_image!("../assets/settings-icons/system/tasks.svg"),
                         6=>egui::include_image!("../assets/settings-icons/system/notifications.svg"),
                         12=>egui::include_image!("../assets/settings-icons/system/weather.svg"),
+                        15=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
                         7=>egui::include_image!("../assets/settings-icons/system/mail.svg"),
                         8=>egui::include_image!("../assets/settings-icons/system/calendar.svg"),
                         SETTINGS_TAB_APPEARANCE=>egui::include_image!("../assets/settings-icons/system/appearance.svg"),
@@ -1545,6 +1675,18 @@ impl App {
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
                     match tab {
+                    15=>{
+                        self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"已配对设备、连接状态与电量",|_,_|{});
+                        settings_label(ui,"提醒");
+                        settings_card(ui,|ui|self.bluetooth_reminder_settings(ui));
+                        settings_label(ui,"设备管理");
+                        settings_card(ui,|ui|{
+                            if ui.button("打开 Mac 蓝牙设置").clicked(){self.pending.push(Cmd::OpenBluetoothSettings);}
+                            if ui.button("蓝牙访问权限").clicked(){self.pending.push(Cmd::OpenBluetoothPrivacy);}
+                            if matches!(self.bluetooth.status,crate::bt::ScanStatus::PermissionRequired(_)) && ui.button("允许岛仔访问蓝牙").clicked(){self.pending.push(Cmd::RequestBluetoothAccess);}
+                            if let Some(message)=&self.bluetooth_ui.message {ui.label(message);}
+                        });
+                    }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1578,8 +1720,8 @@ impl App {
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报"];
-                            ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
+                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","已配对设备、连接状态与电量"];
+                            ui.label(egui::RichText::new("拖动左侧手柄调整顺序。隐藏蓝牙页后设备状态持续更新，提醒由各自开关控制。其他功能关闭后停止后台同步与提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);
                             let mut movement=None;

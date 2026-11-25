@@ -92,6 +92,8 @@ cat > "$APP_STAGING/Contents/Info.plist" <<PLIST
     <string>11.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>岛仔需要访问蓝牙，以显示已配对设备的连接状态与电量，并在你操作时连接或断开设备。</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

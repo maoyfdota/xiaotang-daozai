@@ -69,6 +69,94 @@ pub(crate) fn save_health_pending(pending:[bool;2]) {
     ]);
 }
 
+/// 单一应用实例负责保存，失败后每 30 秒重试，内存去重继续生效。
+pub(crate) struct BluetoothAlertStore {
+    path: PathBuf,
+    dirty: bool,
+    retry_at: f64,
+}
+
+impl BluetoothAlertStore {
+    pub(crate) fn load() -> (Self, std::collections::BTreeSet<String>) {
+        Self::load_from(config_dir().join("bluetooth-alerts.json"))
+    }
+
+    fn load_from(path: PathBuf) -> (Self, std::collections::BTreeSet<String>) {
+        let store = Self { path, dirty: false, retry_at: 0.0 };
+        let result = fs::read(&store.path).and_then(|bytes| {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            if value.get("version").and_then(|version| version.as_u64()) != Some(1) {
+                return Err(std::io::Error::other("低电量提醒记录版本无效"));
+            }
+            let ids = value.get("shown").and_then(|ids| ids.as_array())
+                .ok_or_else(|| std::io::Error::other("低电量提醒记录格式无效"))?;
+            ids.iter().map(|id| id.as_str().filter(|id| !id.is_empty()).map(str::to_owned)
+                .ok_or_else(|| std::io::Error::other("低电量提醒设备标识无效"))).collect()
+        });
+        let shown = match result {
+            Ok(shown) => shown,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound { store.diagnostic(&error); }
+                Default::default()
+            }
+        };
+        (store, shown)
+    }
+
+    fn diagnostic(&self, error: &std::io::Error) {
+        eprintln!("蓝牙低电量提醒记录读写失败：{error}");
+        if let Some(parent) = self.path.parent() {
+            let directory = parent.join("diagnostics");
+            if fs::create_dir_all(&directory).is_ok() {
+                let _ = fs::write(directory.join("bluetooth-alerts.log"), format!("蓝牙低电量提醒记录读写失败：{error}\n"));
+            }
+        }
+    }
+
+    pub(crate) fn mark_dirty(&mut self) { self.dirty = true; }
+
+    pub(crate) fn flush(&mut self, shown: &std::collections::BTreeSet<String>, now: f64) {
+        if !self.dirty || now < self.retry_at { return; }
+        let body = serde_json::json!({"version": 1, "shown": shown}).to_string();
+        let result = self.path.parent().map_or(Ok(()), fs::create_dir_all)
+            .and_then(|_| atomic_write(&self.path, body.as_bytes()));
+        match result {
+            Ok(()) => { self.dirty = false; self.retry_at = 0.0; }
+            Err(error) => { self.retry_at = now + 30.0; self.diagnostic(&error); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bluetooth_store_tests {
+    use super::*;
+
+    #[test]
+    fn bluetooth_alert_storage_handles_missing_corrupt_and_versioned_records() {
+        let directory = std::env::temp_dir().join(format!("daozai-bluetooth-store-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        for (index, content) in [None, Some("{"), Some(r#"{"version":2,"shown":["bose"]}"#),
+            Some(r#"{"version":1,"shown":["bose",5]}"#), Some(r#"{"version":1,"shown":[""]}"#)]
+            .into_iter().enumerate()
+        {
+            let path = directory.join(format!("invalid-{index}.json"));
+            let _ = fs::remove_file(&path);
+            if let Some(content) = content { fs::write(&path, content).unwrap(); }
+            let (mut store, shown) = BluetoothAlertStore::load_from(path.clone());
+            assert!(shown.is_empty());
+            let shown = ["bose".into(), "迈从\"键盘".into()].into();
+            store.mark_dirty();
+            store.flush(&shown, 0.0);
+            assert_eq!(BluetoothAlertStore::load_from(path.clone()).1, shown);
+            store.mark_dirty();
+            store.flush(&Default::default(), 1.0);
+            assert!(BluetoothAlertStore::load_from(path.clone()).1.is_empty());
+            fs::remove_file(path).unwrap();
+        }
+        let _ = fs::remove_dir_all(directory);
+    }
+}
+
 pub(crate) fn atomic_write(path:&Path,body:&[u8])->std::io::Result<()> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64,Ordering};
@@ -248,8 +336,8 @@ pub struct Settings {
     pub browser_minimal: bool,
     pub avoid_browsers: bool,
     pub avoid_apps: Vec<(String,String)>,
-    pub visible_pages: [bool; 9],
-    pub page_order: [usize; 9],
+    pub visible_pages: [bool; 10],
+    pub page_order: [usize; 10],
     pub show_clock: bool,
     pub show_battery: bool,
     pub show_weather: bool,
@@ -259,6 +347,7 @@ pub struct Settings {
     pub resident_order: Vec<usize>,
     pub system_hud: bool,
     pub bluetooth_notifications: bool,
+    pub bluetooth_low_battery_notifications: bool,
     pub read_notifications:bool,
     pub wechat_notifications:bool,
     pub wecom_notifications:bool,
@@ -321,7 +410,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_clock: true, show_battery: true, show_weather: true, clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 10], page_order: [0,1,2,3,4,5,6,7,8,9], show_clock: true, show_battery: true, show_weather: true, clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, bluetooth_low_battery_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
     }
 }
 
@@ -383,12 +472,9 @@ impl Settings {
                 }
                 "page_order" => {
                     if let Ok(order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
-                        if order.len()==9 && (0..9).all(|page|order.contains(&page)) {
-                            s.page_order.copy_from_slice(&order);
-                        } else if order.len()==8 && (0..8).all(|page|order.contains(&page)) {
-                            // 旧配置里没有天气页：接在最后，其余顺序保持不变。
-                            s.page_order[..8].copy_from_slice(&order);
-                            s.page_order[8]=8;
+                        if (8..=10).contains(&order.len()) && (0..order.len()).all(|page|order.contains(&page)) {
+                            // 新页面按 ID 追加到末尾，保留八页、九页配置原有顺序。
+                            s.page_order[..order.len()].copy_from_slice(&order);
                         }
                     }
                 }
@@ -398,7 +484,7 @@ impl Settings {
                 "show_battery" => s.show_battery = v != "0",
                 "show_clock" => s.show_clock = v != "0",
                 "show_weather" => s.show_weather = v != "0",
-                "visible_pages" if (6..=9).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
+                "visible_pages" if (6..=10).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
                     for (enabled,value) in s.visible_pages.iter_mut().zip(v.bytes()) { *enabled=value==b'1'; }
                     for enabled in &mut s.visible_pages[v.len()..]{*enabled=v.bytes().any(|b|b==b'1');}
                 }
@@ -412,6 +498,7 @@ impl Settings {
                 "notification_preview" => s.notification_preview=v=="1",
                 "system_hud" => s.system_hud = v != "0",
                 "bluetooth_notifications" => s.bluetooth_notifications = v != "0",
+                "bluetooth_low_battery_notifications" => s.bluetooth_low_battery_notifications = v != "0",
                 "notifications" => s.notifications = v != "0",
                 "system_notify" => s.system_notify = v != "0",
                 "sound" => s.sound = v == "1",
@@ -496,6 +583,7 @@ impl Settings {
                 ("notification_preview".into(),(self.notification_preview as u8).to_string()),
                 ("system_hud".into(), (self.system_hud as u8).to_string()),
                 ("bluetooth_notifications".into(), (self.bluetooth_notifications as u8).to_string()),
+                ("bluetooth_low_battery_notifications".into(), (self.bluetooth_low_battery_notifications as u8).to_string()),
                 ("notifications".into(), (self.notifications as u8).to_string()),
                 ("system_notify".into(), (self.system_notify as u8).to_string()),
                 ("sound".into(), (self.sound as u8).to_string()),

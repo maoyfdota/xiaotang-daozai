@@ -40,7 +40,7 @@ fn merged_switches_keep_enabled_users_unchanged(){
 #[test]
 fn merged_mail_switch_keeps_last_page_behavior(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
-    h.app.settings.visible_pages=[false;9];h.app.settings.visible_pages[crate::app::MAIL_PAGE]=true;
+    h.app.settings.visible_pages=[false;10];h.app.settings.visible_pages[crate::app::MAIL_PAGE]=true;
     h.app.settings.mail_enabled=false;
     h.app.migrate_merged_switches();
     assert!(h.app.settings.visible_pages[crate::app::MAIL_PAGE]);
@@ -57,6 +57,7 @@ fn settings_old_tab_numbers_open_merged_pages(){
     assert_eq!(group(6),"消息提醒");assert_eq!(group(7),"邮箱");assert_eq!(group(8),"日程");
     assert_eq!(group(0),"通用");assert_eq!(group(13),"外观");assert_eq!(group(14),"位置");
     assert_eq!(group(10),"页面管理");assert_eq!(group(9),"关于");
+    assert_eq!(group(15),"蓝牙");
 }
 
 /// 每个分页都能正常绘制（含功能关闭时的提示），不会因为挪动布局而崩溃。
@@ -65,8 +66,8 @@ fn settings_every_tab_renders_with_modules_on_and_off(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for on in [true,false] {
         let mut h=H::new();h.app.open_settings();h.ctx.set_embed_viewports(true);
-        if !on {for page in 0..9 {if page!=crate::app::MUSIC_PAGE {h.app.settings.visible_pages[page]=false;}}}
-        for tab in 0..=14 {
+        if !on {for page in 0..h.app.settings.visible_pages.len() {if page!=crate::app::MUSIC_PAGE {h.app.settings.visible_pages[page]=false;}}}
+        for tab in 0..=15 {
             h.app.settings_tab=tab;
             for _ in 0..2 {let _=h.ctx.run(egui::RawInput::default(),|ctx|h.app.settings_ui(ctx,false));}
             let expected=if crate::platform::settings_tab_available(tab){tab}else{0};

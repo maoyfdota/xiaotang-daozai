@@ -85,6 +85,10 @@ struct Shell {
     bt_rx: Option<daozai::bt::Service>,
     bt: Vec<daozai::bt::Device>,
     bt_ready: bool,
+    #[cfg(target_os="macos")]
+    bt_management: Option<daozai::bt::management::Service>,
+    #[cfg(target_os="macos")]
+    bt_retry_at: Option<Instant>,
     volume_quiet: PollClock,
     /// v0.5.5：邮件收信服务（工作线程），以及上次同步给它的账号/开关快照。
     /// 邮箱模块开启时才存在；关闭后收信与整理线程随之退出。
@@ -235,6 +239,8 @@ impl Shell {
             bt_rx: None,
             bt: Vec::new(),
             bt_ready: false,
+            #[cfg(target_os="macos")] bt_management: None,
+            #[cfg(target_os="macos")] bt_retry_at: None,
             volume_quiet: PollClock::default(),
             mail: None,
             mail_sig: None,
@@ -276,6 +282,35 @@ impl Shell {
         if let Some(t) = &self.tray {
             t.sync(tray::State { pet: self.app.settings.pet, minimal: self.app.settings.minimal, autostart: self.autostart });
         }
+    }
+
+    #[cfg(target_os="macos")]
+    fn poll_bluetooth(&mut self, ctx: &egui::Context) {
+        let wanted=self.app.module_on(app::BLUETOOTH_PAGE) || self.app.settings.bluetooth_notifications || self.app.settings.bluetooth_low_battery_notifications;
+        if !wanted {self.bt_management=None;return;}
+        if self.bt_management.is_none() && self.bt_retry_at.is_none_or(|at|Instant::now()>=at) {
+            self.app.reset_bluetooth();
+            self.bt_management=Some(daozai::bt::management::spawn());
+            self.bt_retry_at=None;
+        }
+        let mut disconnected=false;
+        if let Some(service)=&self.bt_management {
+            loop {
+                match service.rx.try_recv() {
+                    Ok(event)=>self.app.receive_bluetooth_event(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty)=>break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)=>{disconnected=true;break;}
+                }
+            }
+        }
+        if disconnected {
+            self.bt_management=None;
+            self.bt_retry_at=Some(Instant::now()+Duration::from_secs(5));
+            let mut snapshot=self.app.bluetooth.clone();snapshot.version+=1;
+            snapshot.status=daozai::bt::ScanStatus::Unavailable("蓝牙服务已停止，稍后自动重试".into());
+            self.app.receive_bluetooth_event(daozai::bt::Event::Snapshot(snapshot));
+        }
+        ctx.request_repaint_after(Duration::from_millis(500));
     }
 
     fn env(&mut self, ctx: &egui::Context) -> Env {
@@ -359,6 +394,10 @@ impl Shell {
             },
             bt: self.bt.clone(),
             bt_ready: self.bt_ready,
+            managed_bt: {
+                #[cfg(target_os="macos")] {Some(self.app.bluetooth.clone())}
+                #[cfg(not(target_os="macos"))] {None}
+            },
             screen,
             backdrop,
             glass_blur,
@@ -390,6 +429,8 @@ impl eframe::App for Shell {
             static FIRST_UPDATE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
             FIRST_UPDATE.get_or_init(|| diagnostics::startup("macOS 首帧更新已进入"));
         }
+        #[cfg(target_os="macos")]
+        self.poll_bluetooth(ctx);
         daozai::resources::FRAMES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         let frame_start=Instant::now();
         if self.resource_at.ready(Duration::from_secs(30)){
@@ -807,6 +848,26 @@ impl eframe::App for Shell {
                     }else{self.app.say("无法重新启动岛仔，请从托盘退出后手动打开");}
                 }
                 Cmd::Open(p) => {if let Err(e)=open_path(&p){self.app.say(e);}},
+                Cmd::BluetoothRefresh=>{
+                    #[cfg(target_os="macos")] {
+                        if let Some(service)=&self.bt_management {if let Err(message)=service.send(daozai::bt::Command::Refresh){self.app.say(message);}}
+                    }
+                }
+                Cmd::BluetoothControl(request)=>{
+                    #[cfg(target_os="macos")] {
+                        let result=self.bt_management.as_ref().ok_or_else(||"蓝牙服务尚未就绪".to_owned()).and_then(|service|service.send(daozai::bt::Command::Control(request.clone())));
+                        if let Err(error)=result {self.app.receive_bluetooth_event(daozai::bt::Event::Operation(daozai::bt::OperationResult{request,status:daozai::bt::OperationStatus::Failed(error)}));}
+                    }
+                }
+                Cmd::RequestBluetoothAccess=>{
+                    #[cfg(target_os="macos")] {
+                        if let Err(error)=daozai::bt::management::request_access(){self.app.say(error);}
+                        if let Some(service)=&self.bt_management {let _=service.send(daozai::bt::Command::Refresh);}
+                    }
+                }
+                Cmd::OpenBluetoothSettings|Cmd::OpenBluetoothPrivacy=>{
+                    #[cfg(target_os="macos")] if let Err(error)=open_bluetooth_settings(matches!(cmd,Cmd::OpenBluetoothPrivacy)){self.app.say(error);}
+                }
                 Cmd::OpenUrl(url)=>{
                     if let Some(url)=daozai::mail::web_url(&url) {
                         if open_path(std::path::Path::new(&url)).is_err(){self.app.say("无法打开默认浏览器，请检查默认应用设置");}
@@ -1192,4 +1253,34 @@ fn run() -> eframe::Result<()> {
         .with_visible(cfg!(target_os="macos"));
     let opts = eframe::NativeOptions { viewport, vsync: !cfg!(windows), ..Default::default() };
     graphics::run(opts,|opts|eframe::run_native("岛仔", opts, Box::new(|cc| Ok(Box::new(Shell::new(cc))))))
+}
+
+#[cfg(target_os="macos")]
+fn open_bluetooth_settings(privacy:bool)->Result<(),String> {
+    let modern=std::path::Path::new("/System/Library/ExtensionKit/Extensions/Bluetooth.appex").exists();
+    let target=bluetooth_settings_target(privacy,modern);
+    if open_path(std::path::Path::new(target)).is_ok(){return Ok(());}
+    let status=std::process::Command::new("/usr/bin/open").args(["-b","com.apple.systempreferences"]).status();
+    if status.is_ok_and(|status|status.success()) {
+        Err("已打开系统设置，请选择蓝牙或隐私与安全性 → 蓝牙".into())
+    } else {Err("请手动打开系统设置中的蓝牙或隐私与安全性 → 蓝牙".into())}
+}
+
+#[cfg(target_os="macos")]
+fn bluetooth_settings_target(privacy:bool,modern:bool)->&'static str {
+    if privacy {"x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth"}
+    else if modern {"x-apple.systempreferences:com.apple.BluetoothSettings"}
+    else {"x-apple.systempreferences:com.apple.preferences.Bluetooth"}
+}
+
+#[cfg(all(test,target_os="macos"))]
+mod bluetooth_settings_tests {
+    #[test]
+    fn bluetooth_targets_match_modern_and_legacy_panes() {
+        assert_eq!(super::bluetooth_settings_target(false,true),"x-apple.systempreferences:com.apple.BluetoothSettings");
+        assert_eq!(super::bluetooth_settings_target(false,false),"x-apple.systempreferences:com.apple.preferences.Bluetooth");
+        for modern in [true,false] {
+            assert_eq!(super::bluetooth_settings_target(true,modern),"x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth");
+        }
+    }
 }

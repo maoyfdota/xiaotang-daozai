@@ -1,0 +1,13 @@
+{
+  "sha256": "8fc7ef2e00662f7c5845fe430a85ec7ef236ce1ea28870429597bc90f524e95e",
+  "path": "/Applications/Daozai.app",
+  "backup": "/Users/maoyufeng/RustStudy/xiaotang-daozai/.git/local-backups/mac-bluetooth-final-6kp5ubi_/Daozai.app",
+  "original_backup": "/Users/maoyufeng/RustStudy/xiaotang-daozai/.git/local-backups/mac-bluetooth-794y47mo/Daozai.app",
+  "bundle_id": "com.renly1994.daozai",
+  "version": "0.6.66",
+  "processes": [
+    74306
+  ],
+  "verified_sha256": "8fc7ef2e00662f7c5845fe430a85ec7ef236ce1ea28870429597bc90f524e95e",
+  "host": "macOS 27.2.1 (26B131), Apple Silicon"
+}

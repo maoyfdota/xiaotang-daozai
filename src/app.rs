@@ -34,6 +34,8 @@ pub const MAIL_PAGE: usize = 5;
 pub const QUOTA_PAGE: usize = 6;
 pub const CALENDAR_PAGE: usize = 7;
 pub const WEATHER_PAGE: usize = 8;
+pub const BLUETOOTH_PAGE: usize = 9;
+pub(crate) const BLUETOOTH_H: f32 = 248.0;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -78,8 +80,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; 9] = [1,2,3,5,4,7,11,8,12];
+pub(crate) const PAGE_NAMES: [&str; 10] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "蓝牙"];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,15];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -140,6 +142,8 @@ pub struct Env {
     pub bt: Vec<crate::bt::Device>,
     /// 蓝牙服务是否已经完成首次扫描。
     pub bt_ready: bool,
+    /// Mac 管理快照；旧平台沿用 bt/bt_ready 接口。
+    pub managed_bt: Option<crate::bt::Snapshot>,
     /// 岛所在屏幕（与 `win` 同一坐标系，逻辑点）；用于让通知详情留在屏幕内。
     pub screen: Option<Rect>,
     /// 毛玻璃皮肤：岛体四周采样得到的背景色（sRGB 0..1）。
@@ -190,6 +194,11 @@ pub enum Cmd {
     AddFiles,
     DragFile(PathBuf),
     QuotaRefresh,
+    BluetoothRefresh,
+    OpenBluetoothSettings,
+    RequestBluetoothAccess,
+    OpenBluetoothPrivacy,
+    BluetoothControl(crate::bt::Request),
     QuotaConnected,
     QuotaChooseFile,
     /// 把系统主音量设为 0..100（v0.5.4 音量条）。
@@ -745,8 +754,9 @@ pub struct App {
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 9],
+    dots: [Spring; 10],
     wheel_delta: f32,
+    pub(crate) content_scroll: Option<(egui::Id, f32)>,
     wheel_at: f64,
     wheel_page_at: f64,
 
@@ -877,9 +887,16 @@ pub struct App {
     pub(crate) music_seek_quiet_until: f64,
     /// 点了上一首 / 下一首的时刻：先本地把进度归零，等播放器报回新歌位置再交还。
     pub(crate) music_restart_at: Option<f64>,
-    /// 上一次看到的蓝牙设备，用来只在连接/断开时提示一次。
+    /// 管理数据独立于提醒开关，每个新快照都更新。
+    pub bluetooth: crate::bt::Snapshot,
+    pub(crate) bluetooth_ui: crate::bluetooth_ui::State,
+    /// 每台设备最后一次明确的连接状态，用来比较连接变化。
     pub(crate) bt_shown: Vec<crate::bt::Device>,
     bt_initialized: bool,
+    bt_version: Option<u64>,
+    pub(crate) bt_low_battery: crate::bt::low_battery::LowBattery,
+    pub(crate) bt_alert_store: model::BluetoothAlertStore,
+    pub(crate) bt_alert_hidden: bool,
     /// v0.5.5：邮件账号、最近邮件与设置表单。
     pub(crate) mail: MailState,
     /// 岛内详情与独立阅读窗口各保留一份排版缓存。
@@ -919,6 +936,8 @@ impl App {
         let mail=if crate::platform::page_available(MAIL_PAGE){MailState{accounts:mail::load_accounts(),..Default::default()}}else{MailState::default()};
         let calendar=if crate::platform::page_available(CALENDAR_PAGE){CalendarState::load()}else{CalendarState::default()};
         let quota=if crate::platform::page_available(QUOTA_PAGE){crate::quota_ui::State::load()}else{crate::quota_ui::State::default()};
+        let (bt_alert_store, shown) = model::BluetoothAlertStore::load();
+        let bt_low_battery = crate::bt::low_battery::LowBattery::new(shown, settings.notifications && settings.bluetooth_low_battery_notifications);
         Self {
             opts,
             render_compat_running: settings.render_compat,
@@ -951,6 +970,7 @@ impl App {
             slide: Spring::new(0.0, 260.0, 0.92),
             dots: std::array::from_fn(|i| Spring::new(if i == initial_page { 16.0 } else { 4.0 }, 380.0, 0.86)),
             wheel_delta: 0.0,
+            content_scroll: None,
             wheel_at: -1.0,
             wheel_page_at: -1.0,
             drag_hot: false,
@@ -1020,6 +1040,12 @@ impl App {
             music_seek_ui: None,
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
+            bluetooth: crate::bt::Snapshot::default(),
+            bluetooth_ui: Default::default(),
+            bt_version: None,
+            bt_low_battery,
+            bt_alert_store,
+            bt_alert_hidden: false,
             bt_shown: Vec::new(),
             bt_initialized: false,
             mail,
@@ -1502,6 +1528,10 @@ impl App {
                 self.volume_ui = Some(v);
             }
         }
+        if let Some(snapshot) = &env.managed_bt {
+            self.receive_bluetooth(snapshot);
+            return;
+        }
         if !self.settings.bluetooth_notifications {
             self.bt_shown.clear();
             self.bt_initialized=false;
@@ -1521,6 +1551,71 @@ impl App {
         for device in &connected { self.bluetooth_alert(device, true); }
         for device in &disconnected { self.bluetooth_alert(device, false); }
         self.bt_shown = env.bt.clone();
+    }
+
+    /// 服务重新创建时清除上一生命周期的版本和连接基线。
+    pub fn reset_bluetooth(&mut self) {
+        self.bt_low_battery.reset_service();
+        self.bluetooth_ui = Default::default();
+        self.bluetooth = crate::bt::Snapshot::default();
+        self.bt_version = None;
+        self.bt_shown.clear();
+        self.bt_initialized = false;
+    }
+
+    /// 外壳按 FIFO 逐条交付快照，帧渲染复用最新快照时按版本去重。
+    pub fn receive_bluetooth(&mut self, snapshot: &crate::bt::Snapshot) {
+        use crate::bt::{ConnectionState, ScanStatus};
+        self.sync_bluetooth_alert_setting();
+        if !self.settings.bluetooth_notifications {
+            self.bt_shown.clear();
+            self.bt_initialized = false;
+            let is_bluetooth = |a: &crate::extras::Alert| {
+                a.bluetooth_connection().is_some()
+                    || (a.bluetooth.is_none() && a.source == crate::extras::AlertSource::Internal && a.title == "蓝牙设备")
+            };
+            self.alerts.retain(|a| !is_bluetooth(a));
+            if self.notice.as_ref().is_some_and(is_bluetooth) { self.notice = None; }
+            if self.hud_notice.as_ref().is_some_and(is_bluetooth) { self.hud_notice = None; }
+        }
+        if snapshot.status == ScanStatus::Loading {
+            self.reset_bluetooth();
+            return;
+        }
+        if self.bt_version.is_some_and(|version| {
+            snapshot.version < version || (snapshot.version == version
+                && (self.bt_initialized || !self.settings.bluetooth_notifications))
+        }) { return; }
+        self.bt_version = Some(snapshot.version);
+        self.bluetooth = snapshot.clone();
+        self.bt_low_battery.observe(snapshot);
+        self.save_bluetooth_alerts();
+        if !self.settings.bluetooth_notifications { return; }
+        if matches!(snapshot.status, ScanStatus::Unavailable(_) | ScanStatus::PermissionRequired(_)) { return; }
+        for device in &snapshot.devices {
+            if let Some(index) = self.bt_shown.iter().position(|old| old.id == device.id) {
+                let old = &self.bt_shown[index];
+                if device.connection == ConnectionState::Unknown { continue; }
+                if old.connection != ConnectionState::Unknown && old.connection != device.connection {
+                    self.bluetooth_alert(device, device.connection == ConnectionState::Connected);
+                }
+                self.bt_shown[index] = device.clone();
+            } else {
+                // 初次完整枚举前，新来源只建立基线，已知设备仍比较明确状态。
+                if self.bt_initialized && device.connection == ConnectionState::Connected { self.bluetooth_alert(device, true); }
+                self.bt_shown.push(device.clone());
+            }
+        }
+        if snapshot.complete() {
+            self.bt_initialized = true;
+            let removed: Vec<_> = self.bt_shown.iter()
+                .filter(|old| !snapshot.devices.iter().any(|new| new.id == old.id)).cloned().collect();
+            for device in removed {
+                if device.connection == ConnectionState::Connected { self.bluetooth_alert(&device, false); }
+            }
+            self.bt_shown.retain(|old| snapshot.devices.iter().any(|new| new.id == old.id));
+        }
+        self.bt_initialized = true;
     }
 
     /// 距离上次交互的秒数（小精灵出现的依据）。
@@ -1722,7 +1817,7 @@ impl App {
         self.settings.island_lyrics && self.module_on(MUSIC_PAGE) && self.media.is_music() && self.media.playing
             && !self.browser_minimal_active
     }
-    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
+    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||a.bluetooth_low_battery().is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
 
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
@@ -1780,7 +1875,7 @@ impl App {
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
     fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
-        let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
+        let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.is_hud() && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
     }
     pub fn set_pet(&mut self,enabled:bool) {
@@ -1822,7 +1917,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==BLUETOOTH_PAGE {BLUETOOTH_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1838,6 +1933,7 @@ impl App {
         self.last_t = Some(env.t);
         self.t = env.t;
         self.fullscreen_hidden=env.fullscreen_hidden;
+        self.bt_alert_hidden=env.fullscreen_hidden || env.screen_locked;
         self.quota_tick();
         self.weather_tick();
         self.current_hour=env.hour();
@@ -1970,7 +2066,8 @@ impl App {
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
                     || self.music_volume_open && crate::pages::MUSIC_VOLUME_RECT.contains(cursor));
-                if mail_reading || mail_list || music_volume {self.wheel_delta=0.0;}
+                let bluetooth_list=self.page==BLUETOOTH_PAGE && crate::bluetooth_ui::LIST_BOUNDS.contains(cursor);
+                if mail_reading || mail_list || music_volume || bluetooth_list {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
@@ -2152,6 +2249,7 @@ impl App {
             let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{((WIN_W-32.0)/self.resident.target.width).min(1.0)};
             self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,self.skin_palette());
         }
+        let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
         if reveal > 0.004 && !banner && !restoring_lyrics {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
@@ -2235,6 +2333,7 @@ impl App {
             shapes
         });
         self.update_position_drag(&ctx,env,dt);
+        page_transition |= previous_scroll.zip(self.content_scroll).is_some_and(|((old_id,old_y),(id,y))|old_id==id && old_y!=y);
         let transitioning = self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
             || self.center_guide>0.002 || self.center_lock_a>0.002 || self.t-self.center_lock_at<CENTER_SWEEP
             || !self.h.settled(self.expanded_height())
@@ -3110,6 +3209,7 @@ impl App {
             6 => ("AI", "额度", theme::SOFT_GREEN),
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
             8 => ("当地", "天气", theme::CYAN),
+            BLUETOOTH_PAGE => ("蓝牙", "", theme::BLUE),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -3121,7 +3221,7 @@ impl App {
     fn nav(&mut self, c: &Card) {
         let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.module_on(*page)).collect();
         if pages.len()<2 { return; }
-        let arrow_y=if self.page==6||self.page==8{88.0}else{68.0};
+        let arrow_y=if matches!(self.page,6|8|BLUETOOTH_PAGE){88.0}else{68.0};
         let l = c.hit(8.0, arrow_y-13.0, 26.0, 26.0, "nav-l");
         let r = c.hit(385.0, arrow_y-13.0, 26.0, 26.0, "nav-r");
         let (lh, lp) = c.hover_t(&l);
@@ -3168,6 +3268,7 @@ impl App {
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c),
             8 => self.page_weather(c,env,cmds),
+            BLUETOOTH_PAGE => self.page_bluetooth(c,cmds),
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }

@@ -47,7 +47,7 @@ Planning is complete only after the artifacts pass review. Present the latest fi
 - [x] Run appropriate checks below; avoid unrelated whole-repository formatting and repeated checks without new evidence.
 - [x] Package and check permissions/settings/live list plus existing capsule and settings interaction.
 - [x] Inspect existing Mac installation entry, update its app, verify hashes/bundle metadata/process path and keep a recoverable prior bundle.
-- [ ] Commit after the one-shot plan confirmation, then record journal/archive according to the workflow. Specs and acceptance results are updated. Any authorized push must explicitly target verified origin and branch, never upstream.
+- [x] Commit after the explicit user confirmation and record the session journal. Work commit: `17bbdfb`. Specs and acceptance results are updated. Keep the task in progress while final installed permission access remains unresolved. Any authorized push must explicitly target verified origin and branch, never upstream.
 
 ## Validation
 

@@ -15,12 +15,12 @@
   "branch": "my_feature_1123",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "17bbdfbf09118b6d9c241a7f8c9c761f86c0e40d",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Code committed with explicit user approval on 2026-11-25. Headset playback after reconnect was confirmed by the user. Retain in_progress: final installed Bluetooth permission access after unsigned bundle replacement remains unverified; user requested no further hardware validation.",
   "meta": {}
 }

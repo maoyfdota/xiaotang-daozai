@@ -1,7 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 //! Windows 外壳：无边框透明窗口 + 托盘 + 系统数据，界面全部交给 `daozai::app::App`。
 
-use eframe::egui::{self, Color32, Pos2};
+use eframe::egui::{self, Color32};
+#[cfg(not(target_os="macos"))]
+use eframe::egui::Pos2;
 use daozai::app::{self, App, Cmd, Env, Options};
 use daozai::smtc;
 #[cfg(windows)]
@@ -39,6 +41,8 @@ struct Shell {
     placement_key: (String, i32, daozai::model::Dock, bool, (i32, i32)),
     #[cfg(target_os="macos")]
     mouse_passthrough: Option<bool>,
+    #[cfg(target_os="macos")]
+    root_input_scale: f32,
     /// OLED 像素偏移当前实际使用的位移；展开、拖拽、隐藏时保持不变。
     #[cfg(windows)]
     oled_shift: (i32, i32),
@@ -178,7 +182,7 @@ impl Shell {
         #[cfg(windows)] let system_state=daozai::system::Snapshot::default();
         #[cfg(windows)] let system_rx=daozai::system::observe(cc.egui_ctx.clone(),system_state.clone(),initial_input);
         // 岛体大小只作用于主窗口，在首帧之前生效，避免启动时先按 100% 闪一下。
-        #[cfg(windows)] eframe::set_root_viewport_scale(app.settings.island_scale());
+        #[cfg(any(windows,target_os="macos"))] eframe::set_root_viewport_scale(app.settings.island_scale());
         Self {
             app,
             t0: Instant::now(),
@@ -201,6 +205,8 @@ impl Shell {
             placement_key: (String::new(), 0, daozai::model::Dock::Top, true, (0, 0)),
             #[cfg(target_os="macos")]
             mouse_passthrough: None,
+            #[cfg(target_os="macos")]
+            root_input_scale: eframe::root_viewport_scale(),
             #[cfg(windows)]
             oled_shift: (0, 0),
             win_x: 0.0,
@@ -289,11 +295,20 @@ impl Shell {
             if self.app.settings.show_battery && b.is_some_and(|v|v<=20) && !c && self.sys.0.is_some_and(|v|v>20) {self.app.alert("电量偏低",format!("剩余 {}% · 请连接电源",b.unwrap()),5,true);}
             self.sys = (b, c, PollClock::now());
         }
+        #[cfg(not(target_os="macos"))]
         let ppp = ctx.pixels_per_point();
+        #[cfg(not(target_os="macos"))]
         let origin = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min).unwrap_or(Pos2::new(self.win_x, 0.0));
         #[cfg(windows)]
         let origin=self.native.as_ref().and_then(|w|w.logical_origin(ppp)).unwrap_or(origin);
+        #[cfg(not(target_os="macos"))]
         let cursor = cursor_logical(ppp).map(|(x, y)| Pos2::new(x - origin.x, y - origin.y));
+        #[cfg(target_os="macos")]
+        let cursor = ctx.input(|i| i.viewport().outer_rect).and_then(|rect| {
+            macos_shell::cursor_logical().map(|point| {
+                macos_shell::pointer_in_viewport(point, rect.min, self.root_input_scale * ctx.zoom_factor())
+            })
+        });
         #[cfg(windows)]
         let cursor=cursor.filter(|_|!self.native.as_ref().is_some_and(|w|w.holding_through_strip()));
         // 所在屏幕换算到窗口逻辑坐标，供通知详情等浮层避开屏幕边缘。
@@ -357,6 +372,11 @@ impl Shell {
 
 impl eframe::App for Shell {
     fn raw_input_hook(&mut self,_ctx:&egui::Context,input:&mut egui::RawInput) {
+        #[cfg(target_os="macos")]
+        if input.viewport_id==egui::ViewportId::ROOT {
+            // eframe 已按这个倍率转换本帧输入，设置修改要到下一帧才生效。
+            self.root_input_scale=eframe::root_viewport_scale();
+        }
         if input.viewport_id==egui::ViewportId::ROOT {self.app.filter_todo_input(input);}
     }
 
@@ -462,7 +482,9 @@ impl eframe::App for Shell {
                 });
                 if let Some(position)=position {
                     self.win_x=position.x;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
+                    let size=egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)*self.root_input_scale;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position/ctx.zoom_factor()));
                     self.placed=true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 }else if self.t0.elapsed()>=Duration::from_secs(2){
@@ -1034,9 +1056,6 @@ fn cursor_logical(ppp: f32) -> Option<(f32, f32)> {
     unsafe { GetCursorPos(&mut p) }.ok()?;
     Some((p.x as f32 / ppp, p.y as f32 / ppp))
 }
-
-#[cfg(target_os="macos")]
-fn cursor_logical(_ppp:f32)->Option<(f32,f32)>{macos_shell::cursor_logical()}
 
 #[cfg(all(not(windows),not(target_os="macos")))]
 fn cursor_logical(_ppp: f32) -> Option<(f32, f32)> {

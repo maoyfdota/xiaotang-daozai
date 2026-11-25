@@ -114,9 +114,91 @@ pub fn cursor_logical() -> Option<(f32, f32)> {
     }
 }
 
+/// AppKit 桌面点先按本帧缩放换算，再减去已经缩放的 viewport 原点。
+pub fn pointer_in_viewport(point: (f32, f32), origin: eframe::egui::Pos2, scale: f32) -> eframe::egui::Pos2 {
+    eframe::egui::pos2(point.0 / scale - origin.x, point.1 / scale - origin.y)
+}
+
 pub fn logical_position(display_id: &str, physical: (i32, i32)) -> Option<eframe::egui::Pos2> {
     let screen = screen_info().into_iter().find(|screen| screen.display.id == display_id)?;
     if !screen.scale_factor.is_finite() || screen.scale_factor <= 0.0 { return None; }
     Some(eframe::egui::pos2(physical.0 as f32 / screen.scale_factor as f32, physical.1 as f32 / screen.scale_factor as f32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daozai::app::{App, Env, Options};
+    use eframe::egui::{self, Pos2, Rect, Vec2};
+
+    #[test]
+    fn scaled_capsule_hover_opens_panel_and_settings() {
+        let data_dir = std::env::temp_dir().join(format!("daozai-macos-pointer-{}", std::process::id()));
+        let previous_dir = std::env::var_os("DAOZAI_DATA_DIR");
+        std::env::set_var("DAOZAI_DATA_DIR", &data_dir);
+        for scale in [0.9, 1.0, 1.25] {
+            for native_origin in [egui::pos2(1020.0, 318.0), egui::pos2(-800.0, -200.0)] {
+                let ctx = egui::Context::default();
+                let mut app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
+                app.settings.island_shape = daozai::model::IslandShape::Pill;
+                app.settings.skin = daozai::model::Skin::Fluid;
+                app.settings.island_size = (scale * 100.0) as u32;
+                let canvas = Rect::from_min_size(Pos2::ZERO, egui::vec2(daozai::side_dock::SIDE_W, daozai::side_dock::SIDE_H));
+                let scaled_origin = native_origin / scale;
+                let mut time = 0.0;
+                let mut frame = |app: &mut App, local: Pos2, pressed: Option<bool>| {
+                    time += 1.0 / 60.0;
+                    let native_cursor = native_origin + local.to_vec2() * scale;
+                    let cursor = pointer_in_viewport((native_cursor.x, native_cursor.y), scaled_origin, scale);
+                    let mut raw = egui::RawInput {
+                        time: Some(time), screen_rect: Some(canvas), focused: true,
+                        events: vec![egui::Event::PointerMoved(local)], ..Default::default()
+                    };
+                    let viewport = raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+                    viewport.native_pixels_per_point = Some(2.0 * scale);
+                    viewport.outer_rect = Some(Rect::from_min_size(scaled_origin, canvas.size()));
+                    if let Some(pressed) = pressed {
+                        raw.events.push(egui::Event::PointerButton {
+                            pos: local, button: egui::PointerButton::Primary, pressed, modifiers: Default::default(),
+                        });
+                    }
+                    let env = Env { t: time, cursor: Some(cursor), clock: "09:41:00".into(), ..Default::default() };
+                    let mut result = None;
+                    let _ = ctx.run(raw, |ctx| {
+                        egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx, |ui| {
+                            result = Some(app.frame(ui, canvas, &env));
+                        });
+                    });
+                    result.unwrap()
+                };
+                let mut output = frame(&mut app, egui::pos2(20.0, 300.0), None);
+                for _ in 0..120 {
+                    output = frame(&mut app, egui::pos2(20.0, 300.0), None);
+                }
+                let capsule = output.hit.center();
+                for _ in 0..120 {
+                    output = frame(&mut app, capsule, None);
+                }
+                assert!(output.expanded, "capsule must expand at scale {scale}, origin {native_origin:?}");
+                assert!(app.captures_root_pointer(), "expanded panel must receive clicks");
+                // side_hit_rect expands the panel by (4, 2), and the gear is at (394, 18).
+                let gear = output.hit.min + Vec2::new(398.0, 20.0);
+                frame(&mut app, gear, None);
+                frame(&mut app, gear, Some(true));
+                frame(&mut app, gear, Some(false));
+                assert!(app.settings_open, "settings gear must work at scale {scale}");
+                for _ in 0..120 {
+                    output = frame(&mut app, egui::pos2(20.0, 20.0), None);
+                }
+                assert!(!output.expanded);
+                assert!(!app.captures_root_pointer(), "pointer must pass through after collapse");
+            }
+        }
+        match previous_dir {
+            Some(path) => std::env::set_var("DAOZAI_DATA_DIR", path),
+            None => std::env::remove_var("DAOZAI_DATA_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
 }
 

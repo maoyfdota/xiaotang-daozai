@@ -51,3 +51,12 @@ The bundle launch check uses `open target/aarch64-apple-darwin/release/Daozai.ap
 - Check existing settings and local content survive application restarts in the macOS data directory.
 - This task's acceptance target is the Apple Silicon macOS bundle. Windows-native behavior and Windows runtime tests are outside this task's acceptance scope.
 - Public signing, notarization, DMG generation, Intel builds, and macOS 11 runtime testing are explicitly deferred.
+
+## Capsule settings access repair (2026-11-25)
+
+- The saved configuration used Fluid, Pill, and 90% island size. `eframe::scale_root_input` divided the viewport origin by the island scale, but the AppKit global pointer stayed in native logical points. Subtracting these mismatched coordinates prevented hover expansion and hid the settings gear.
+- The shell now captures the applied frame scale before settings can change it, converts the pointer with the same scale and egui zoom, initializes the scale before the first frame, and resizes the native canvas when island size changes.
+- The regression exercises the actual pointer conversion followed by `App::frame`, including capsule expansion, gear-click settings access, collapse, and pointer passthrough at 90%, 100%, and 125% with positive and negative desktop origins. The original conversion failed at 90%. All 19 binary tests passed after the fix.
+- `cargo clippy --locked --bin daozai --target aarch64-apple-darwin` passed with existing warnings. The release package passed arm64, plist, and `minos 11.0` checks. The installed `/Applications/Daozai.app/Contents/MacOS/daozai` matches the release SHA-256 `95edcfe9d18a61d5035be74ae3f77098106a1518fe977c354ff7c502abd43b1c`.
+- CUA delivers local pointer events without changing `NSEvent.mouseLocation` on this host. Temporary runtime instrumentation confirmed local `[473.9, 272.2]` while the global sample stayed outside the island. CUA therefore cannot validate global-hover expansion. The temporary instrumentation was removed and the release app restored. The user then confirmed that physical-pointer hover expands the capsule and the gear opens settings successfully.
+- All 7 `model::tests` and 4 `settings_window::tests` passed, covering atomic settings replacement, concurrent writes, appearance normalization, and independent settings-window placement. The user's Pill/90%/Fluid settings were preserved across the release restart.

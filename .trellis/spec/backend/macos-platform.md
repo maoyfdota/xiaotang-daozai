@@ -12,6 +12,7 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 - `model::config_dir() -> PathBuf` resolves the application data directory.
 - `macos_shell::connected() -> Vec<display_layout::Display>` enumerates AppKit screens.
 - `macos_shell::cursor_logical() -> Option<(f32, f32)>` samples the global pointer in logical desktop coordinates.
+- `macos_shell::pointer_in_viewport(point, origin, scale) -> egui::Pos2` converts an AppKit desktop point to the current root frame's local egui coordinates.
 - `macos_shell::logical_position(display_id: &str, physical: (i32, i32)) -> Option<egui::Pos2>` converts a physical display coordinate into the logical origin expected by the window viewport.
 - `display_layout::side_origin(bounds, dock, canvas, half_extent, scale, offset) -> Option<(i32, i32)>` computes a bounded side-canvas origin in physical pixels.
 - `scripts/package-macos.sh` builds the arm64 release executable and creates `target/aarch64-apple-darwin/release/Daozai.app`.
@@ -36,6 +37,8 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 
 - The root viewport uses the `SIDE_W × SIDE_H` canvas and forces `Dock::Right` on macOS.
 - AppKit screen and pointer APIs return logical-point coordinates. `display_layout::Display.bounds` and `work_top` use physical pixels. Convert only at the `macos_shell` boundary using the screen backing scale factor.
+- Root input has an additional island-size scale. Capture the applied scale in `Shell::raw_input_hook`, before `update` can schedule another scale. Divide the AppKit pointer by that captured scale times `ctx.zoom_factor()`, then subtract the already-scaled viewport origin. An unavailable origin produces no pointer sample for that frame.
+- Initialize the root scale before the first frame. Resize the native root canvas with `InnerSize(SIDE_SIZE * root_input_scale)` when placing it, so drawing and native bounds continue to agree after size changes. The independent settings viewport retains its own scale.
 - Place the island within the visible frame and safe top inset when available. Use `visibleFrame` when safe-area metadata is unavailable.
 - While collapsed, the transparent root viewport passes pointer events through. Turn passthrough off while the island captures the pointer and restore it after collapse. The independent settings viewport remains interactive.
 
@@ -56,6 +59,8 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 | A direct command targets a hidden page | Ignore or reject the request before opening its settings or starting its service. |
 | `NSScreen.safeAreaInsets` is unavailable | Use the screen visible frame for the safe top boundary. |
 | Display metadata or a valid viewport origin cannot be resolved | Keep the startup viewport visible so the process does not remain permanently hidden. |
+| Island size is changed to 90% or 125% | Capsule hover expands the panel, the gear opens settings, and leaving restores pointer passthrough. |
+| The settings UI schedules a new island size during a frame | Pointer conversion uses the scale already applied to that frame's input. |
 | Metal initialization fails | Retry with OpenGL and report both initialization errors if fallback also fails. |
 | Package tools are unavailable or the host is not macOS | Stop packaging with an error before replacing the existing `.app`. |
 
@@ -72,6 +77,7 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 - Startup and navigation tests assert stale hidden page indices and direct commands cannot open hidden pages or start their services.
 - Data-path tests assert both the environment override and macOS default path. Persistence tests round-trip settings without dropping hidden legacy values.
 - Display-layout tests cover right-edge placement, vertical center, offsets, Retina scale factors, invalid bounds, and preservation of the expanded panel within the safe work area.
+- `macos_shell::tests::scaled_capsule_hover_opens_panel_and_settings` feeds the shell's coordinate conversion into `App::frame` at 90%, 100%, and 125%, using positive and negative desktop origins. It asserts expansion, pointer capture, gear-click settings access, collapse, and restored passthrough. Unscaled subtraction must fail this regression at 90%.
 - Bundle validation asserts the executable is arm64, `Info.plist` is valid, `LSMinimumSystemVersion` is 11.0, and the Mach-O build version has `minos 11.0`.
 - Dock icon regression tests exercise `theme::app_icon()` and verify transparent margins, centered artwork, and an approximately 80% artwork width. Compare the running app's Dock icon after restart as well as inspecting the packaged ICNS.
 - Runtime checks on an available macOS host verify the visible island, placement, expansion/collapse, pointer passthrough, settings interaction, and data persistence across restart. A build-target check does not substitute for runtime coverage on macOS 11.

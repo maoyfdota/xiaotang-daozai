@@ -44,7 +44,8 @@ chmod 755 "$APP_STAGING/Contents/MacOS/daozai"
 create_icon() {
     local filename="$1"
     local pixels="$2"
-    local artwork_pixels=$((pixels * 55 / 100))
+    # Keep the same transparent margin as theme::app_icon, which eframe uses at runtime.
+    local artwork_pixels=$((pixels * 80 / 100))
     local artwork="$TEMP_DIR/$filename"
     sips -z "$artwork_pixels" "$artwork_pixels" "$ICON_SOURCE" --out "$artwork" >/dev/null
     sips -p "$pixels" "$pixels" "$artwork" --out "$ICONSET_DIR/$filename" >/dev/null

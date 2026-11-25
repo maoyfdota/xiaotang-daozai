@@ -43,7 +43,7 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 
 - WGPU Metal is the primary macOS renderer. OpenGL is the fallback.
 - The package script sets `MACOSX_DEPLOYMENT_TARGET=11.0`, packages the executable and Finder icon, and writes `LSMinimumSystemVersion=11.0`.
-- Each `iconset` image scales the logo to 55% of its square canvas before transparent padding, keeping the apparent Dock artwork smaller at every Retina scale.
+- Each `iconset` image scales the logo to 80% of its square canvas before transparent padding. `theme::app_icon()` uses the same proportion in its cached 128-pixel canvas on macOS. eframe passes this runtime image to `NSApplication::setApplicationIconImage`, overriding the bundle icon after launch, so both paths must retain the padding.
 - The local-validation bundle is unsigned. Signing, notarization, DMG distribution, updates, and Intel builds remain outside this contract.
 
 ## 4. Validation & Error Matrix
@@ -73,6 +73,7 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 - Data-path tests assert both the environment override and macOS default path. Persistence tests round-trip settings without dropping hidden legacy values.
 - Display-layout tests cover right-edge placement, vertical center, offsets, Retina scale factors, invalid bounds, and preservation of the expanded panel within the safe work area.
 - Bundle validation asserts the executable is arm64, `Info.plist` is valid, `LSMinimumSystemVersion` is 11.0, and the Mach-O build version has `minos 11.0`.
+- Dock icon regression tests exercise `theme::app_icon()` and verify transparent margins, centered artwork, and an approximately 80% artwork width. Compare the running app's Dock icon after restart as well as inspecting the packaged ICNS.
 - Runtime checks on an available macOS host verify the visible island, placement, expansion/collapse, pointer passthrough, settings interaction, and data persistence across restart. A build-target check does not substitute for runtime coverage on macOS 11.
 
 ## 7. Wrong vs Correct

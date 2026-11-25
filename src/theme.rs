@@ -227,13 +227,52 @@ fn build_fonts()->FontDefinitions {
 pub fn app_icon()->std::sync::Arc<eframe::egui::IconData>{
     static ICON:std::sync::OnceLock<std::sync::Arc<eframe::egui::IconData>>=std::sync::OnceLock::new();
     ICON.get_or_init(||{
-        let image=image::load_from_memory(include_bytes!("../assets/daozai-logo.png")).expect("岛仔图标资源应有效").thumbnail(128,128).to_rgba8();
+        const ICON_SIZE: u32 = 128;
+        let artwork_size = if cfg!(target_os = "macos") { ICON_SIZE * 80 / 100 } else { ICON_SIZE };
+        let image = image::load_from_memory(include_bytes!("../assets/daozai-logo.png"))
+            .expect("岛仔图标资源应有效")
+            .thumbnail(artwork_size, artwork_size)
+            .to_rgba8();
+        #[cfg(target_os = "macos")]
+        let image = {
+            // eframe 会用此图覆盖 Dock 的 bundle 图标，透明边距须与打包脚本一致。
+            let mut canvas = image::RgbaImage::new(ICON_SIZE, ICON_SIZE);
+            let x = (ICON_SIZE - image.width()) / 2;
+            let y = (ICON_SIZE - image.height()) / 2;
+            image::imageops::overlay(&mut canvas, &image, i64::from(x), i64::from(y));
+            canvas
+        };
         std::sync::Arc::new(eframe::egui::IconData{width:image.width(),height:image.height(),rgba:image.into_raw()})
     }).clone()
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_app_icon_keeps_dock_padding() {
+        let icon = super::app_icon();
+        let mut left = icon.width;
+        let mut top = icon.height;
+        let mut right = 0;
+        let mut bottom = 0;
+        for (index, pixel) in icon.rgba.chunks_exact(4).enumerate() {
+            if pixel[3] > 0 {
+                let x = index as u32 % icon.width;
+                let y = index as u32 / icon.width;
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+        assert!(left >= 12 && top >= 12, "Dock 图标上边和左边需要透明留白，当前边界为 {left}, {top}, {right}, {bottom}");
+        assert!(right <= icon.width - 12 && bottom <= icon.height - 12, "Dock 图标下边和右边需要透明留白");
+        assert!((100..=104).contains(&(right - left)), "Dock 图案应占画布约 80%");
+        assert!(left.abs_diff(icon.width - right) <= 1, "Dock 图案应水平居中");
+        assert!(top.abs_diff(icon.height - bottom) <= 2, "Dock 图案应垂直居中");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_system_fonts_cover_chinese_and_korean_in_all_weights() {

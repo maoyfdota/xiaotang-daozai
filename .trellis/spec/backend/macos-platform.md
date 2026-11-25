@@ -43,7 +43,7 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 
 - WGPU Metal is the primary macOS renderer. OpenGL is the fallback.
 - The package script sets `MACOSX_DEPLOYMENT_TARGET=11.0`, packages the executable and Finder icon, and writes `LSMinimumSystemVersion=11.0`.
-- Each `iconset` image scales the logo to 75% of its square canvas before transparent padding, keeping the apparent Dock artwork smaller at every Retina scale.
+- Each `iconset` image scales the logo to 55% of its square canvas before transparent padding, keeping the apparent Dock artwork smaller at every Retina scale.
 - The local-validation bundle is unsigned. Signing, notarization, DMG distribution, updates, and Intel builds remain outside this contract.
 
 ## 4. Validation & Error Matrix

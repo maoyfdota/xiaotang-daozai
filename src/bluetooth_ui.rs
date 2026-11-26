@@ -305,9 +305,9 @@ impl App {
                     if let Some(command) = self.bluetooth_request(&id, action) { cmds.push(command); }
                 }
                 c.text(42.0, 179.0, &reading_description(&device), 10.0, W::Regular, theme::GRAY, H::Left);
-                c.text(42.0, 196.0, "系统报告可能有延迟 · 未提供充电状态", 10.0, W::Regular, theme::GRAY, H::Left);
+                c.text(42.0, 196.0, "系统报告可能有延迟", 10.0, W::Regular, theme::GRAY, H::Left);
                 c.hit(42.0, 164.0, 335.0, 38.0, "bluetooth-detail-source")
-                    .on_hover_text(format!("设备标识 {}\n读取时间不代表设备内部采样时间；仅电量上升或达到 100% 不会触发充电提醒。", device.id));
+                    .on_hover_text(format!("设备标识 {}\n读取时间不代表设备内部采样时间。", device.id));
             } else {
                 c.centered_text(209.5, 124.0, "设备已不在列表", 13.0, W::Semibold, theme::WHITE, H::Center);
             }

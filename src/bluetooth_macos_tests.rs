@@ -291,7 +291,8 @@ fn bluetooth_detail_navigation_keeps_control_and_marks_historical_battery() {
     h.frame(vec![]);
     assert_eq!(h.app.bluetooth_ui.selected.as_deref(), Some("detail"));
     assert!(h.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("75% · 旧值"))));
-    assert!(h.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("未提供充电状态"))));
+    assert!(h.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("系统报告可能有延迟"))));
+    assert!(!h.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("充电"))));
     h.cmds.clear();
     h.click(H::local(344.0, 153.0));
     assert!(h.cmds.iter().any(|c| matches!(c, Cmd::BluetoothControl(r) if r.device_id=="detail" && r.action==Action::Disconnect)));

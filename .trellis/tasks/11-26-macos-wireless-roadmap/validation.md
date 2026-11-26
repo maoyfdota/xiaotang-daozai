@@ -5,7 +5,7 @@
 ## 软件验证
 
 - `cargo test --lib bt:: -- --test-threads=1`：15 项通过，包含时效、失败历史、重连与授权映射。
-- `cargo test --lib bluetooth -- --test-threads=1`：总览、详情、操作、提醒、配置、常驻集成定向回归通过；图库默认忽略，另行执行。
+- `cargo test --lib bluetooth -- --test-threads=1`：跳过充电功能后复测，30 项通过，1 项图库默认忽略；确认详情保留旧电量值与报告延迟说明，无充电占位，断开按钮仍能发出正确请求。
 - `cargo test --lib wireless -- --test-threads=1`：筛选、配置、侧边点击、设置预览及恢复默认回归。
 - `cargo test --lib bar_layout -- --test-threads=1`：10 项通过，含新无线设备槽位及原布局。
 - `cargo check --target aarch64-apple-darwin --bin daozai`：通过，保留已有警告。
@@ -39,7 +39,13 @@
 - `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/IOKit.framework/Headers/ps/IOPSKeys.h`：存在电源充电字段，但不构成所有蓝牙设备都能枚举并可靠匹配的证明。
 - `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/IOKit.framework/Headers/hid/IOHIDUsageTables.h`：电池用法定义本身不等于目标设备提供该能力。
 
-现有 system_profiler 适配器只采信地址对应的有效聚合电量。尚无新增来源与目标蓝牙设备身份／充电状态的验证证据，所以未引入 BLE 主动连接或推测充电逻辑。后续应使用具体目标设备确认协议、标识关联、状态转换，再实现充电动画和去重提醒。
+用户告知有设备正在充电后，本机执行只读探查：
+
+- `system_profiler SPBluetoothDataType -json -detailLevel full`：返回一个已连接蓝牙配件及四个离线记录，均未报告充电字段。
+- `pmset -g accps`：可见一台外设的电量百分比，未报告外设充电；报告中的已充满状态属于 Mac 内置电池。
+- `ioreg`：可见 BLE HID 服务及设备地址，但该服务未报告电池／充电字段；电源服务里的 `IsCharging` 属于 Mac 内置电池，不能用于蓝牙外设。记录不保存设备地址或序列号。
+
+本次未取得能够与蓝牙地址对应的外设充电状态，也没有确认充电中的那台设备出现在可读数据里；该结论不代表所有型号都无法读取。按用户要求跳过首期充电功能，详情不显示充电提示，也不引入主动连接或推测充电逻辑。
 
 ## 实机与交付
 

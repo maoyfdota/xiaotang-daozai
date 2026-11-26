@@ -23,7 +23,9 @@
   "relatedFiles": [
     "prd.md",
     "design.md",
-    "implement.md"
+    "implement.md",
+    "progress.md",
+    "validation.md"
   ],
   "notes": "User authorized implementation on current branch, Mac only, Chinese commits per completed part, push to private/my_feature_1123 and update progress. No subagents or branch merges. Bluetooth first; 2.4G deferred.",
   "meta": {}

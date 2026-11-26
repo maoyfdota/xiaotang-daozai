@@ -22,13 +22,14 @@ pub const SIDE_HALF_EXTENT: f32 = 150.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SideItem {
     Clock, Weather, Battery, Music, Focus, Bell,
+    Wireless(usize),
     /// AI 额度：账号下标（None 为「+N」）与高度。
     Quota(usize, f32),
 }
 
 impl SideItem {
     fn height(self, clock_seconds: bool) -> f32 {
-        match self { Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
+        match self { Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Wireless(_) => 30.0, Self::Quota(_, h) => h }
     }
 }
 
@@ -45,6 +46,19 @@ impl App {
         if crate::platform::page_available(crate::app::MUSIC_PAGE) && self.media.is_music() { items.push(SideItem::Music); }
         if self.pomo.running { items.push(SideItem::Focus); }
         items.extend(self.quota_side_items().into_iter().map(|(index, h)| SideItem::Quota(index, h)));
+        items.extend((0..self.wireless_resident_devices().len()).map(SideItem::Wireless));
+        if crate::bar_layout::valid_order(&self.settings.resident_order) {
+            use crate::bar_layout as bar;
+            items.sort_by_key(|item| {
+                let slot = match item {
+                    SideItem::Clock => bar::CLOCK, SideItem::Weather => bar::WEATHER,
+                    SideItem::Battery => bar::BATTERY, SideItem::Music => bar::MUSIC,
+                    SideItem::Focus => bar::FOCUS, SideItem::Quota(..) => bar::QUOTA,
+                    SideItem::Wireless(_) => bar::WIRELESS, SideItem::Bell => bar::BELL,
+                };
+                self.settings.resident_order.iter().position(|value| *value == slot).unwrap_or(usize::MAX)
+            });
+        }
         if self.t < self.notification_bell_until { items.push(SideItem::Bell); }
         items
     }
@@ -133,6 +147,11 @@ impl App {
                     if self.settings.clock_seconds {c.text(cx,top+28.0,text.rsplit(':').next().unwrap_or("--"),12.0,W::Bold,theme::GRAY,H::Center);}
                 }
                 SideItem::Weather => self.draw_side_weather(c,cx,mid),
+                SideItem::Wireless(index) => {
+                    if let Some(device) = self.wireless_resident_devices().get(index) {
+                        self.draw_wireless_resident(c, cx, mid, device);
+                    }
+                }
                 SideItem::Battery => paint::battery(c, cx, mid, env.battery, env.charging, 0.72),
                 SideItem::Music => paint::playback_bars(c, cx, mid, self.t, self.media.playing, theme::WHITE),
                 SideItem::Focus => {

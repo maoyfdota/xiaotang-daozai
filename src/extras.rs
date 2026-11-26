@@ -1679,6 +1679,7 @@ impl App {
                         self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"已配对设备、连接状态与电量",|_,_|{});
                         settings_label(ui,"提醒");
                         settings_card(ui,|ui|self.bluetooth_reminder_settings(ui));
+                        settings_card(ui,|ui|self.wireless_resident_settings(ui));
                         settings_label(ui,"设备管理");
                         settings_card(ui,|ui|{
                             if ui.button("打开 Mac 蓝牙设置").clicked(){self.pending.push(Cmd::OpenBluetoothSettings);}

@@ -313,6 +313,108 @@ fn bluetooth_permission_actions_remain_available_with_cached_devices() {
 }
 
 #[test]
+fn wireless_resident_selects_stable_lowest_values_and_preserves_custom_choices() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    let values = vec![device("C", DeviceKind::Mouse, ConnectionState::Connected, Some(75), 1),
+        device("B", DeviceKind::Keyboard, ConnectionState::Connected, Some(30), 1),
+        device("A", DeviceKind::Headphones, ConnectionState::Connected, Some(30), 1),
+        device("unknown", DeviceKind::Mouse, ConnectionState::Connected, None, 1)];
+    update(&mut h, 1, values.clone());
+    assert!(h.app.wireless_resident_devices().is_empty());
+    h.app.settings.wireless_resident = true;
+    let ids = |app: &App| app.wireless_resident_devices().into_iter().map(|d| d.id).collect::<Vec<_>>();
+    assert_eq!(ids(&h.app), ["A", "B"]);
+    h.app.settings.wireless_resident_custom = true;
+    h.app.settings.wireless_resident_ids = vec!["C".into(), "unknown".into()];
+    assert_eq!(ids(&h.app), ["C", "unknown"]);
+    let mut disconnected = values.clone();
+    disconnected[0].connection = ConnectionState::Disconnected;
+    update(&mut h, 2, disconnected);
+    assert_eq!(ids(&h.app), ["unknown"]);
+    assert_eq!(h.app.settings.wireless_resident_ids, ["C", "unknown"]);
+    update(&mut h, 3, values);
+    assert_eq!(ids(&h.app), ["C", "unknown"]);
+    h.app.settings.wireless_resident_ring_only = true;
+    h.app.settings.save();
+    let loaded = crate::model::Settings::load();
+    assert!(loaded.wireless_resident && loaded.wireless_resident_custom && loaded.wireless_resident_ring_only);
+    assert_eq!(loaded.wireless_resident_ids, ["C", "unknown"]);
+    let path = crate::model::config_dir().join("settings.txt");
+    std::fs::write(&path, "resident_order=7,6,2,0,5,9,1\nwireless_resident_ids=[\"A\",\"A\",\"B\",\"C\"]\n").unwrap();
+    let loaded = crate::model::Settings::load();
+    assert_eq!(loaded.resident_order, [7,6,2,0,5,9,1,10]);
+    assert_eq!(loaded.wireless_resident_ids, ["A", "B"]);
+    assert!(!loaded.wireless_resident);
+}
+
+#[test]
+fn wireless_side_resident_obeys_order_and_opens_device_detail() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.settings.bluetooth_low_battery_notifications = false;
+    h.app.settings.wireless_resident = true;
+    h.app.settings.resident_order = crate::bar_layout::DEFAULT_ORDER.to_vec();
+    h.app.settings.resident_order.rotate_right(1);
+    update(&mut h, 1, vec![device("mouse", DeviceKind::Mouse, ConnectionState::Connected, Some(35), 1)]);
+    assert_eq!(h.app.side_items().first(), Some(&crate::side_dock::SideItem::Wireless(0)));
+    for _ in 0..80 { h.frame(vec![]); }
+    let point = h.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text()=="35" => Some(text.visual_bounding_rect().center()),
+        _ => None,
+    }).expect("wireless battery is visible on the collapsed side bar");
+    click_side_canvas(&mut h, point);
+    assert_eq!(h.app.page(), crate::app::BLUETOOTH_PAGE);
+    assert_eq!(h.app.bluetooth_ui.selected.as_deref(), Some("mouse"));
+}
+
+#[test]
+fn wireless_settings_render_available_and_saved_devices_without_overlapping() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.settings.wireless_resident = true;
+    h.app.settings.wireless_resident_custom = true;
+    h.app.settings.wireless_resident_ids = vec!["absent".into(), "mouse".into()];
+    update(&mut h, 1, vec![device("mouse", DeviceKind::Mouse, ConnectionState::Connected, Some(50), 1)]);
+    for dark in [false, true] {
+        h.ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        let output = h.ctx.run(egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(620.0,500.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                h.app.wireless_resident_settings(ui);
+                h.app.resident_order_settings(ui);
+            });
+        });
+        for phrase in ["无线设备常驻", "环＋数字", "仅环", "当前不可用"] {
+            assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(phrase))), "missing {phrase}");
+        }
+        let preview = crate::resident_settings::preview_layout(&[crate::bar_layout::WIRELESS, crate::bar_layout::CLOCK], 0);
+        assert!(preview.x[crate::bar_layout::WIRELESS] < preview.x[crate::bar_layout::CLOCK]);
+    }
+}
+
+#[test]
+fn wireless_resident_restore_default_keeps_unavailable_slots_out_of_preview() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.settings.resident_order = crate::bar_layout::DEFAULT_ORDER.iter().copied().rev().collect();
+    let draw = |h: &mut H, events| {
+        h.t += 1.0 / 60.0;
+        h.ctx.run(egui::RawInput { time: Some(h.t), events, screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(620.0,300.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| h.app.resident_order_settings(ui));
+        })
+    };
+    let output = draw(&mut h, vec![]);
+    let point = output.shapes.iter().find_map(|s| match &s.shape {
+        egui::Shape::Text(t) if t.galley.text()=="恢复默认" => Some(t.visual_bounding_rect().center()), _ => None,
+    }).unwrap();
+    draw(&mut h, vec![egui::Event::PointerMoved(point)]);
+    for pressed in [true,false] {
+        draw(&mut h, vec![egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }]);
+    }
+    assert!(h.app.settings.resident_order.is_empty());
+}
+
+#[test]
 #[ignore = "导出 Mac 蓝牙页面与低电量提醒合成截图"]
 fn bluetooth_macos_gallery() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -324,7 +426,7 @@ fn bluetooth_macos_gallery() {
         ("dark", crate::model::Skin::Classic),
         ("light", crate::model::Skin::Cream),
     ] {
-        for mode in ["devices", "permission", "battery", "detail"] {
+        for mode in ["devices", "permission", "battery", "detail", "resident", "resident-ring"] {
             let mut h = H::new();
             h.app.settings.skin = skin;
             let devices = vec![
@@ -356,8 +458,12 @@ fn bluetooth_macos_gallery() {
                 snapshot.status = ScanStatus::PermissionRequired("需要访问蓝牙".into());
             }
             h.managed_bt = Some(snapshot.clone());
-            if mode != "battery" {
+            if !mode.starts_with("resident") && mode != "battery" {
                 h.app.show_page(crate::app::BLUETOOTH_PAGE);
+            }
+            if mode.starts_with("resident") {
+                h.app.settings.wireless_resident = true;
+                h.app.settings.wireless_resident_ring_only = mode == "resident-ring";
             }
             if mode == "detail" { h.app.bluetooth_ui.selected = Some("headphones".into()); }
             let (w, hgt) = (crate::side_dock::SIDE_W, crate::side_dock::SIDE_H);
@@ -365,7 +471,7 @@ fn bluetooth_macos_gallery() {
                 crate::preview_raster::Raster::new((w * 2.0) as usize, (hgt * 2.0) as usize);
             for frame in 0..180 {
                 h.t += 1.0 / 60.0;
-                let cursor = if mode == "battery" {
+                let cursor = if mode == "battery" || mode.starts_with("resident") {
                     None
                 } else {
                     Some(Pos2::new(w - 200.0, hgt / 2.0))

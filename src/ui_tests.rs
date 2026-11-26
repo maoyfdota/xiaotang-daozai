@@ -6100,12 +6100,12 @@ fn resident_components_can_be_dragged_saved_and_reset(){
 
 #[test]
 fn weather_resident_settings_preserve_old_orders_and_the_status_switch(){
-    use crate::bar_layout::{BATTERY,CLOCK,FOCUS,MUSIC,PET,QUOTA,WEATHER};
+    use crate::bar_layout::{BATTERY,CLOCK,FOCUS,MUSIC,PET,QUOTA,WEATHER,WIRELESS};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let path=crate::model::config_dir().join("settings.txt");std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path,"resident_order=7,6,2,0,9,1\nshow_weather=0\n").unwrap();
     h.app.settings=crate::model::Settings::load();
-    assert_eq!(h.app.settings.resident_order,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY],"旧排列应在时钟后插入天气并保留其余顺序");
+    assert_eq!(h.app.settings.resident_order,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY,WIRELESS],"旧排列应在时钟后插入天气并保留其余顺序，新无线组件追加到末尾");
     h.app.weather.snapshot=Some(crate::weather::Snapshot{temp:9.0,..Default::default()});
     assert!(h.app.weather_pill().is_none(),"状态开关关闭后天气不占常驻位置");
     assert!(h.app.module_on(8),"关闭常驻天气应保留天气页面");

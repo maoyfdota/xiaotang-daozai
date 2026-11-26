@@ -79,3 +79,11 @@ Hardware capabilities and system-cache freshness are recorded limits, not guaran
 - Values expire after 90 seconds, including a snapshot retained by the UI without new service events. Failed queries may retain the previous value/time for history but cannot drive alerts.
 - A manual refresh also requests a battery report, subject to a five-second minimum request interval and one in-flight report. Background refresh remains 60 seconds.
 - Unknown native authorization values are unavailable states, not proof that the user denied permission. The installed-bundle permission discrepancy remains a hardware validation item.
+
+## Wireless UI and residents (2026-11-26)
+
+- The displayed page name is Wireless Devices; persisted page ID 9 and settings tab 15 are unchanged. The detail view retains native controls, keyboard confirmation, permission recovery and history/fresh-value separation.
+- Wireless residents default off. Auto mode picks at most two connected devices with valid battery, ordered by level then stable identity. Custom mode keeps at most two saved IDs across disconnect/removal and displays only currently connected selections; missing battery uses an unknown placeholder.
+- Resident slot 10 is appended to previous seven-slot orders; six-slot orders first receive the existing weather migration. Side placement honors custom order. Settings previews must filter unavailable platform slots, including after restoring defaults.
+- Ring-only and ring-with-number styles share the same source data and route to device details. Page visibility, reminder preferences and resident visibility remain separate.
+- No charging state is inferred from increasing battery or 100%. Until a verified source with reliable identity mapping is integrated, details explicitly show unavailable charging information and no charging alert setting is exposed.

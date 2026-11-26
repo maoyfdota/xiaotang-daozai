@@ -8,7 +8,11 @@ pub(crate) fn preview_layout(order:&[usize],quotas:usize)->Layout {
         crate::platform::page_available(crate::app::FOCUS_PAGE),
         crate::platform::notification_controls_available(),true,
         crate::platform::page_available(crate::app::WEATHER_PAGE));
-    layout.reorder(order);layout
+    if crate::platform::page_available(crate::app::BLUETOOTH_PAGE) { layout.with_wireless(1); }
+    // 设置页只传当前平台可见的槽，补齐隐藏槽后再按真实顺序预览。
+    let mut full = order.to_vec();
+    for slot in DEFAULT_ORDER { if !full.contains(&slot) { full.push(slot); } }
+    layout.reorder(&full);layout
 }
 
 fn resident_slot_available(slot:usize)->bool {
@@ -19,13 +23,14 @@ fn resident_slot_available(slot:usize)->bool {
         FOCUS=>crate::platform::page_available(crate::app::FOCUS_PAGE),
         BELL=>crate::platform::notification_controls_available(),
         WEATHER=>crate::platform::page_available(crate::app::WEATHER_PAGE),
+        WIRELESS=>crate::platform::page_available(crate::app::BLUETOOTH_PAGE),
         _=>true,
     }
 }
 
 impl crate::app::App {
     pub(crate) fn resident_order_settings(&mut self,ui:&mut egui::Ui){
-        let default=if self.settings.show_battery {DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,WEATHER,BATTERY,MUSIC,FOCUS]};
+        let default=if self.settings.show_battery {DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,WEATHER,BATTERY,MUSIC,FOCUS,WIRELESS]};
         let stored=if valid_order(&self.settings.resident_order){self.settings.resident_order.clone()}else{default.clone()};
         let mut order=Vec::new();
         for slot in stored.into_iter().chain(default.iter().copied()){
@@ -34,7 +39,7 @@ impl crate::app::App {
         ui.horizontal(|ui|{
             ui.label(RichText::new("拖动岛上的图标").color(ui.visuals().text_color()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                if ui.small_button("恢复默认").clicked(){self.settings.resident_order.clear();order=default.clone();}
+                if ui.small_button("恢复默认").clicked(){self.settings.resident_order.clear();order=default.iter().copied().filter(|slot|resident_slot_available(*slot)).collect();}
             });
         });
         ui.add_space(12.0);
@@ -70,10 +75,10 @@ impl crate::app::App {
         let pointer=ui.ctx().pointer_interact_pos();
         let dragged=egui::DragAndDrop::payload::<usize>(ui.ctx());
         let mut movement=None;
-        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",_=>"吉祥物"};
+        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",WIRELESS=>"无线设备",_=>"吉祥物"};
         for (index,&slot) in order.iter().enumerate(){
             let x=cx+layout.x[slot].unwrap();
-            let width=match slot{CLOCK=>layout.widths[CLOCK],BATTERY=>20.0,WEATHER=>layout.widths[WEATHER],PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,_=>{
+            let width=match slot{CLOCK=>layout.widths[CLOCK],BATTERY=>20.0,WEATHER=>layout.widths[WEATHER],WIRELESS=>layout.widths[WIRELESS],PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,_=>{
                 let left=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x-layout.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
                 let right=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x+layout.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);
                 right-left
@@ -89,7 +94,7 @@ impl crate::app::App {
             let dx=if is_dragged{pointer.map(|p|((p.x-origin.x)/scale-(left+width/2.0)).clamp(-left,layout.width-left-width)).unwrap_or(0.0)}else{0.0};
             if is_dragged {ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
             else if response.hovered(){ui.painter().rect_filled(rect,6.0,Color32::from_white_alpha(18));}
-            let active=match slot{CLOCK=>self.settings.show_clock,BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),WEATHER=>weather_snapshot.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,_=>true};
+            let active=match slot{CLOCK=>self.settings.show_clock,BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),WEATHER=>weather_snapshot.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,WIRELESS=>self.settings.wireless_resident,_=>true};
             let c=card.shifted(dx,0.0).faded(if active||is_dragged{1.0}else{0.38}).ghost();
             match slot{
                 BATTERY=>paint::battery(&c,x,15.0,self.resident_power.0,self.resident_power.1,1.0),
@@ -100,6 +105,10 @@ impl crate::app::App {
                 WEATHER=>if let Some(snapshot)=weather_snapshot.as_ref(){self.paint_pill_weather(&c,x,&layout,snapshot);}else{crate::weather_ui::icon(&c,x,15.0,16.0,crate::weather::Kind::Partly);},
                 PET=>self.pet.draw(&c,x,self.t,self.skin_palette()),
                 MUSIC=>paint::playback_bars(&c,x,15.0,self.t,self.media.playing,theme::WHITE),
+                WIRELESS=>{
+                    let device=self.wireless_resident_devices().into_iter().next().unwrap_or(crate::bt::Device { name: "无线设备".into(), ..Default::default() });
+                    self.draw_wireless_resident(&c,x,15.0,&device);
+                },
                 FOCUS=>crate::focus_bar::draw(&c,x,15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false),
                 QUOTA if count>0=>self.draw_quota_bar(&c,cx,&layout),
                 _=>{c.ring(x,15.0,10.0,2.0,theme::GRAY);c.text(x,18.0,"AI",7.0,W::Bold,theme::WHITE,H::Center);},

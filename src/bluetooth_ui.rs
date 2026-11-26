@@ -25,6 +25,88 @@ pub(crate) const LIST_BOUNDS: Rect = Rect {
 };
 
 impl App {
+    pub(crate) fn wireless_resident_settings(&mut self, ui: &mut egui::Ui) {
+        crate::extras::setting_row(ui, "无线设备常驻", "在收起的岛上显示设备电量，点击进入详情", &mut self.settings.wireless_resident);
+        ui.add_enabled_ui(self.settings.wireless_resident, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("选择设备");
+                ui.selectable_value(&mut self.settings.wireless_resident_custom, false, "自动");
+                ui.selectable_value(&mut self.settings.wireless_resident_custom, true, "自选");
+            });
+            ui.horizontal(|ui| {
+                ui.label("显示样式");
+                ui.selectable_value(&mut self.settings.wireless_resident_ring_only, false, "环＋数字");
+                ui.selectable_value(&mut self.settings.wireless_resident_ring_only, true, "仅环");
+            });
+            if self.settings.wireless_resident_custom {
+                ui.weak("最多两台，按选择顺序显示；断开后保留选择，重新连接自动恢复。");
+                let mut devices = self.bluetooth.devices.clone();
+                for id in &self.settings.wireless_resident_ids {
+                    if !devices.iter().any(|d| d.id == *id) {
+                        devices.push(Device { id: id.clone(), name: "已保存设备（当前不可用）".into(), ..Default::default() });
+                    }
+                }
+                devices.sort_by(|a,b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+                if devices.is_empty() { ui.weak("配对设备读取成功后即可选择。"); }
+                for device in devices {
+                    let mut selected = self.settings.wireless_resident_ids.contains(&device.id);
+                    let available = selected || self.settings.wireless_resident_ids.len() < 2;
+                    let label = format!("{} · {}", display_name(&device), connection_label(&device, false));
+                    let response = ui.push_id(&device.id, |ui| ui.add_enabled(available, egui::Checkbox::new(&mut selected, label))).inner;
+                    let response = response.on_hover_text(format!("设备标识 {}", device.id));
+                    if response.changed() {
+                        self.settings.wireless_resident_ids.retain(|id| *id != device.id);
+                        if selected { self.settings.wireless_resident_ids.push(device.id); }
+                    }
+                }
+            } else {
+                ui.weak("自动显示已连接且电量有效的设备，电量较低的优先，最多两台。");
+            }
+        });
+    }
+
+    pub(crate) fn wireless_resident_devices(&self) -> Vec<Device> {
+        if !self.settings.wireless_resident || !matches!(self.bluetooth.status, ScanStatus::Ready | ScanStatus::Partial(_)) {
+            return Vec::new();
+        }
+        if self.settings.wireless_resident_custom {
+            let mut selected = Vec::new();
+            for id in &self.settings.wireless_resident_ids {
+                if selected.iter().any(|d: &Device| d.id == *id) { continue; }
+                if let Some(device) = self.bluetooth.devices.iter().find(|d| d.id == *id && d.connection == ConnectionState::Connected) {
+                    selected.push(device.clone());
+                    if selected.len() == 2 { break; }
+                }
+            }
+            selected
+        } else {
+            let now = std::time::Instant::now();
+            let mut devices: Vec<_> = self.bluetooth.devices.iter()
+                .filter(|d| d.connection == ConnectionState::Connected && d.valid_battery_at(now).is_some()).cloned().collect();
+            devices.sort_by(|a, b| a.valid_battery_at(now).cmp(&b.valid_battery_at(now)).then_with(|| a.id.cmp(&b.id)));
+            devices.truncate(2);
+            devices
+        }
+    }
+
+    pub(crate) fn draw_wireless_resident(&mut self, c: &Card, x: f32, y: f32, device: &Device) {
+        battery_ring(c, device, x, y, 10.5, 2.0, true);
+        if self.settings.wireless_resident_ring_only {
+            c.circle(x, y, 7.5, theme::BLUE);
+            crate::extras::device_icon(c, device.kind, x - 6.0, y - 6.0, 12.0);
+        } else {
+            let text = device.valid_battery().map_or_else(|| "—".into(), |level| level.to_string());
+            c.centered_text(x, y, &text, 8.0, W::Semibold, theme::WHITE, H::Center);
+        }
+        let hint = format!("{} · {}\n点击查看详情", display_name(device), battery_label(device, false));
+        if c.hit(x - 14.0, y - 14.0, 28.0, 28.0, ("wireless-resident", &device.id))
+            .on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.bluetooth_ui.selected = Some(device.id.clone());
+            self.bluetooth_ui.confirmation = None;
+            self.show_page(crate::app::BLUETOOTH_PAGE);
+        }
+    }
+
     pub fn receive_bluetooth_event(&mut self, event: Event) {
         match event {
             Event::Snapshot(snapshot) => self.receive_bluetooth(&snapshot),

@@ -1979,6 +1979,7 @@ impl App {
         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
+        layout.with_wireless(self.wireless_resident_devices().len());
         layout.reorder(&self.settings.resident_order);
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
@@ -3105,6 +3106,12 @@ impl App {
             let c=base.faded(compact_alpha);let c=if compact_alpha<0.8{c.ghost()}else{c};
             self.draw_quota_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
+            if let Some(x)=layout.x[bar::WIRELESS] {
+                let devices = self.wireless_resident_devices();
+                for (index, device) in devices.iter().enumerate() {
+                    self.draw_wireless_resident(&c, local_cx+x-layout.widths[bar::WIRELESS]/2.0+14.0+index as f32*28.0, 15.0, device);
+                }
+            }
         }
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);

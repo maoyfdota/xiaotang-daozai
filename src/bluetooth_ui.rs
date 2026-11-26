@@ -12,6 +12,7 @@ pub(crate) struct State {
     pub pending: BTreeMap<String, Request>,
     pub message: Option<String>,
     pub confirmation: Option<String>,
+    pub selected: Option<String>,
     next_request: u64,
 }
 use crate::paint::{self, Card, H};
@@ -149,7 +150,7 @@ impl App {
                 .on_hover_text(error);
         }
 
-        if self.bluetooth.devices.is_empty() {
+        if self.bluetooth.devices.is_empty() || matches!(self.bluetooth.status, ScanStatus::PermissionRequired(_)) {
             let (title, detail) = match &self.bluetooth.status {
                 ScanStatus::Loading => ("正在读取设备", "稍后自动显示已配对设备"),
                 ScanStatus::Ready => ("还没有已配对设备", "可在 Mac 蓝牙设置中配对设备"),
@@ -198,6 +199,35 @@ impl App {
                 {
                     cmds.push(Cmd::OpenBluetoothPrivacy);
                 }
+            }
+            return;
+        }
+
+        if let Some(id) = self.bluetooth_ui.selected.clone() {
+            if action_button(c, 42.0, 55.0, 60.0, "返回列表", "bluetooth-back").clicked() {
+                self.bluetooth_ui.selected = None;
+                self.bluetooth_ui.confirmation = None;
+            }
+            if let Some(device) = self.bluetooth.devices.iter().find(|device| device.id == id).cloned() {
+                let unavailable = !matches!(self.bluetooth.status, ScanStatus::Ready | ScanStatus::Partial(_));
+                let name = display_name(&device);
+                c.text(112.0, 69.0, &c.fit(name, 12.0, W::Semibold, 265.0), 12.0, W::Semibold, theme::WHITE, H::Left);
+                c.hit(112.0, 52.0, 265.0, 24.0, "bluetooth-detail-name").on_hover_text(name);
+                battery_ring(c, &device, 83.0, 113.0, 28.0, 3.0, !unavailable);
+                c.circle(83.0, 113.0, 22.0, theme::BLUE);
+                crate::extras::device_icon(c, device.kind, 68.0, 98.0, 30.0);
+                c.text(128.0, 111.0, &battery_label(&device, unavailable), 21.0, W::Semibold, theme::WHITE, H::Left);
+                c.text(128.0, 133.0, connection_label(&device, unavailable), 10.5, W::Regular, theme::GRAY, H::Left);
+                let row = c.shifted(42.0, 115.0);
+                if let Some(action) = device_controls(&row, &device, 335.0, unavailable, &mut self.bluetooth_ui) {
+                    if let Some(command) = self.bluetooth_request(&id, action) { cmds.push(command); }
+                }
+                c.text(42.0, 179.0, &reading_description(&device), 10.0, W::Regular, theme::GRAY, H::Left);
+                c.text(42.0, 196.0, "系统报告可能有延迟 · 未提供充电状态", 10.0, W::Regular, theme::GRAY, H::Left);
+                c.hit(42.0, 164.0, 335.0, 38.0, "bluetooth-detail-source")
+                    .on_hover_text(format!("设备标识 {}\n读取时间不代表设备内部采样时间；仅电量上升或达到 100% 不会触发充电提醒。", device.id));
+            } else {
+                c.centered_text(209.5, 124.0, "设备已不在列表", 13.0, W::Semibold, theme::WHITE, H::Center);
             }
             return;
         }
@@ -279,6 +309,55 @@ fn connection_order(state: ConnectionState) -> u8 {
     }
 }
 
+fn display_name(device: &Device) -> &str {
+    if device.name.trim().is_empty() { "未命名蓝牙设备" } else { &device.name }
+}
+
+fn connection_label(device: &Device, unavailable: bool) -> &'static str {
+    if unavailable { return "状态获取失败"; }
+    match device.connection {
+        ConnectionState::Connected => "已连接",
+        ConnectionState::Disconnected => "未连接",
+        ConnectionState::Unknown => "状态获取失败",
+    }
+}
+
+fn battery_label(device: &Device, unavailable: bool) -> String {
+    if unavailable || device.connection != ConnectionState::Connected { return "电量未知".into(); }
+    if let Some(level) = device.valid_battery() { return format!("{level}%"); }
+    match (device.battery, device.battery_status) {
+        (Some(level), _) => format!("{level}% · 旧值"),
+        (_, crate::bt::BatteryStatus::Failed) => "读取失败".into(),
+        _ => "电量未知".into(),
+    }
+}
+
+fn reading_description(device: &Device) -> String {
+    let Some(at) = device.battery_read_at else {
+        return if device.battery.is_some() { "电量来源未提供读取时间" } else { "尚未读取到有效电量" }.into();
+    };
+    let age = at.elapsed().as_secs();
+    let age = if age < 60 { format!("{age} 秒前") }
+        else if age < 3600 { format!("{} 分钟前", age / 60) }
+        else { format!("{} 小时前", age / 3600) };
+    let status = if device.battery_status == crate::bt::BatteryStatus::Failed { " · 读取失败" }
+        else if device.valid_battery().is_none() { " · 已过期" } else { "" };
+    format!("系统蓝牙报告 · {age}读取{status}")
+}
+
+pub(crate) fn battery_ring(c: &Card, device: &Device, x: f32, y: f32, radius: f32, width: f32, available: bool) {
+    c.ring(x, y, radius, width, paint::alpha(theme::GRAY, 0.3));
+    let level = available.then(|| device.valid_battery()).flatten()
+        .filter(|_| device.connection == ConnectionState::Connected);
+    if let Some(level) = level {
+        if level > 0 {
+            let start = -std::f32::consts::FRAC_PI_2;
+            c.arc(x, y, radius, start, start + std::f32::consts::TAU * level as f32 / 100.0,
+                width, if level <= 20 { theme::YELLOW } else { theme::GREEN });
+        }
+    }
+}
+
 fn device_row(
     c: &Card,
     device: &Device,
@@ -305,8 +384,9 @@ fn device_row(
         DeviceKind::Phone => "手机",
         DeviceKind::Other => "其他设备",
     };
-    c.circle(16.0, 23.0, 15.0, theme::BLUE);
-    crate::extras::device_icon(c, device.kind, 5.0, 12.0, 22.0);
+    battery_ring(c, device, 18.0, 24.0, 16.0, 2.5, !unavailable);
+    c.circle(18.0, 24.0, 12.0, theme::BLUE);
+    crate::extras::device_icon(c, device.kind, 8.0, 14.0, 20.0);
     let name = if device.name.trim().is_empty() {
         "未命名蓝牙设备"
     } else {
@@ -333,7 +413,7 @@ fn device_row(
     let battery = (connection == ConnectionState::Connected)
         .then(|| device.valid_battery())
         .flatten();
-    let battery_text = battery.map_or_else(|| "电量未知".to_owned(), |level| format!("{level}%"));
+    let battery_text = battery_label(device, unavailable);
     let battery_color = if battery.is_some_and(|level| level <= 20) {
         theme::YELLOW
     } else {
@@ -348,6 +428,19 @@ fn device_row(
         battery_color,
         H::Right,
     );
+    if c.hit(0.0, 0.0, width - 112.0, 51.0, ("bluetooth-device", &device.id))
+        .on_hover_text(format!("{name}\n查看设备详情"))
+        .on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        ui.selected = Some(device.id.clone());
+        ui.confirmation = None;
+    }
+    let selected = device_controls(c, device, width, unavailable, ui);
+    c.seg((0.0, 51.5), (width, 51.5), 0.5, Color32::from_gray(42));
+    selected
+}
+
+fn device_controls(c: &Card, device: &Device, width: f32, unavailable: bool, ui: &mut State) -> Option<Action> {
+    let connection = if unavailable { ConnectionState::Unknown } else { device.connection };
     let action = if connection == ConnectionState::Connected {
         Action::Disconnect
     } else {
@@ -357,20 +450,6 @@ fn device_row(
         Action::Connect => &device.connect,
         Action::Disconnect => &device.disconnect,
     };
-    let reason = match capability {
-        Capability::Available => "可直接操作",
-        Capability::Unavailable(reason) => reason.as_str(),
-        Capability::Unverified => "请使用 Mac 蓝牙设置",
-    };
-    let detail = format!("{name}\n设备标识 {}\n{reason}", device.id);
-    c.hit(
-        0.0,
-        0.0,
-        width - 112.0,
-        51.0,
-        ("bluetooth-device", &device.id),
-    )
-    .on_hover_text(detail);
     let pending = ui.pending.get(&device.id);
     let mut selected = None;
     if let Some(request) = pending {
@@ -462,7 +541,6 @@ fn device_row(
             H::Left,
         );
     }
-    c.seg((0.0, 51.5), (width, 51.5), 0.5, Color32::from_gray(42));
     selected
 }
 

@@ -24,6 +24,8 @@ fn device(
             BatteryStatus::Unknown
         },
         battery_observation: observation,
+        battery_read_at: battery.map(|_| std::time::Instant::now()),
+        battery_source: battery.map(|_| crate::bt::BatterySource::SystemReport),
         connect: Capability::Available,
         disconnect: Capability::Available,
         ..Default::default()
@@ -277,6 +279,40 @@ fn bluetooth_permissions_have_distinct_ui_and_request_actions() {
 }
 
 #[test]
+fn bluetooth_detail_navigation_keeps_control_and_marks_historical_battery() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    let mut value = device("detail", DeviceKind::Headphones, ConnectionState::Connected, Some(75), 1);
+    value.battery_read_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(120));
+    update(&mut h, 1, vec![value]);
+    h.app.show_page(crate::app::BLUETOOTH_PAGE);
+    h.hover(H::local(200.0, 90.0), 1.0);
+    h.click(H::local(100.0, 90.0));
+    h.frame(vec![]);
+    assert_eq!(h.app.bluetooth_ui.selected.as_deref(), Some("detail"));
+    assert!(h.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("75% · 旧值"))));
+    assert!(h.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("未提供充电状态"))));
+    h.cmds.clear();
+    h.click(H::local(344.0, 153.0));
+    assert!(h.cmds.iter().any(|c| matches!(c, Cmd::BluetoothControl(r) if r.device_id=="detail" && r.action==Action::Disconnect)));
+    h.click(H::local(72.0, 65.0));
+    assert!(h.app.bluetooth_ui.selected.is_none());
+}
+
+#[test]
+fn bluetooth_permission_actions_remain_available_with_cached_devices() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.managed_bt = Some(Snapshot { version: 1, status: ScanStatus::PermissionRequired("denied".into()),
+        devices: vec![device("cached", DeviceKind::Keyboard, ConnectionState::Unknown, Some(80), 1)] });
+    h.app.show_page(crate::app::BLUETOOTH_PAGE);
+    h.hover(H::local(200.0, 90.0), 1.0);
+    h.cmds.clear();
+    h.click(H::local(260.0, 165.0));
+    assert!(h.cmds.iter().any(|c| matches!(c, Cmd::OpenBluetoothPrivacy)));
+}
+
+#[test]
 #[ignore = "导出 Mac 蓝牙页面与低电量提醒合成截图"]
 fn bluetooth_macos_gallery() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -288,7 +324,7 @@ fn bluetooth_macos_gallery() {
         ("dark", crate::model::Skin::Classic),
         ("light", crate::model::Skin::Cream),
     ] {
-        for mode in ["devices", "permission", "battery"] {
+        for mode in ["devices", "permission", "battery", "detail"] {
             let mut h = H::new();
             h.app.settings.skin = skin;
             let devices = vec![
@@ -323,6 +359,7 @@ fn bluetooth_macos_gallery() {
             if mode != "battery" {
                 h.app.show_page(crate::app::BLUETOOTH_PAGE);
             }
+            if mode == "detail" { h.app.bluetooth_ui.selected = Some("headphones".into()); }
             let (w, hgt) = (crate::side_dock::SIDE_W, crate::side_dock::SIDE_H);
             let mut raster =
                 crate::preview_raster::Raster::new((w * 2.0) as usize, (hgt * 2.0) as usize);

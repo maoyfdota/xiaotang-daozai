@@ -38,4 +38,4 @@
 
 独立子任务：`.trellis/tasks/11-26-macos-performance-page`。首期排除进程排行、GPU、性能常驻样式和 Windows 适配；不进行不同分支合并。每个可验收部分通过检查后，更新子任务进度，以中文提交并显式推送 `private/my_feature_1123`。
 
-性能页进度：页面 ID 10／设置页签 16、旧配置迁移、Mac 导航与设置入口已接通；定向配置和设置映射测试通过。CPU／内存／磁盘／网络采样及趋势展示仍在实现，尚未提交或推送。
+性能页进度：页面 ID 10／设置页签 16、旧配置迁移、Mac 导航与设置入口、CPU／内存／磁盘／网络采样和最近一分钟趋势均已完成。性能单测 6 项、配置迁移、Mac 页面能力、设置映射及 arm64 release 检查通过；宽泛 settings 测试有 7 项失败，另有此前 page 筛选的 15 项失败未归因，详情见 `.trellis/tasks/11-26-macos-performance-page/progress.md`。采样与趋势代码待提交并推送到 `private/my_feature_1123`。

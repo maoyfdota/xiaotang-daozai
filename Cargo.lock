@@ -519,6 +519,7 @@ dependencies = [
  "imap",
  "imap-proto",
  "keyring",
+ "libc",
  "mailparse",
  "memmap2",
  "native-tls",

@@ -45,6 +45,7 @@ mod quota_ui;
 pub mod weather;
 mod weather_ui;
 mod performance_ui;
+mod performance;
 mod weather_source_ui;
 mod qweather;
 mod pages;

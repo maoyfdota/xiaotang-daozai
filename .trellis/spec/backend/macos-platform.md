@@ -21,7 +21,7 @@ The first release targets `aarch64-apple-darwin` with macOS 11.0 as its deployme
 
 ### Capabilities
 
-- macOS exposes focus, water/sit reminders, to-do, Open-Meteo weather, and the approved Bluetooth management page (ID 9).
+- macOS exposes focus, water/sit reminders, to-do, Open-Meteo weather, Bluetooth management (ID 9), and the system performance page (ID 10).
 - macOS hides Music, Shelf, Mail, AI quota, Calendar, QWeather credentials, Windows notification delivery, Windows system status, startup, and foreground-window avoidance controls.
 - `page_available` is the source of truth for navigation, settings, direct page entry, reminders, and optional service startup.
 - Hidden persisted values remain serialized and unchanged. Startup must not migrate or initialize hidden feature settings or credentials.
@@ -112,3 +112,75 @@ Use the same capability check for navigation, settings visibility, reminders, an
 - Device operations run on bounded background workers; actual state confirms success and UI deadlines remain responsive. Keyboard disconnect requires confirmation.
 - Unknown/failed battery is never zero; only new valid observations drive <=20% cycles. Persist dedup only after actual banner display.
 - Do not merge device identity by name or infer authoritative removal from an incomplete source.
+
+## Performance page extension (2026-11-26)
+
+### 1. Scope / Trigger
+
+The macOS performance page (page ID 10, settings tab ID 16) reports CPU and physical-memory use plus disk and network byte rates. It samples only while the performance page is open and enabled. Bluetooth remains page ID 9 and settings tab ID 15. Process lists, GPU metrics, temperature, and resident performance widgets are outside this contract.
+
+### 2. Signatures
+
+- `performance::collect() -> RawSample` reads one native macOS counter snapshot.
+- `Sampler::due(&self, now: Instant) -> bool` gates sampling to about once per second.
+- `Sampler::ingest(&mut self, now: Instant, raw: RawSample) -> Reading` computes one displayable reading and appends it to history.
+- `Sampler::latest(&self) -> Reading` returns the latest reading; each metric is an `Option`.
+- `Sampler::samples(&self) -> impl Iterator<Item = &Sample>` returns the retained trend points.
+- `App::frame` calls `collect` only when `open`, `page == PERFORMANCE_PAGE`, and `module_on(PERFORMANCE_PAGE)` are all true.
+
+`RawSample` contains optional CPU busy/total counters, memory used/total bytes, disk read/write cumulative bytes, and network receive/send cumulative bytes. `Reading` contains optional CPU percent, memory used/total bytes, and four per-second byte rates.
+
+### 3. Contracts
+
+- CPU uses Mach per-processor cumulative load counters. Read `natural_t` ticks as unsigned; interpreting the same 32-bit values as signed breaks after long uptime. Utilization is calculated only between two valid snapshots and a positive sampling interval; the first sample establishes the baseline.
+- Memory uses `hw.memsize` and Mach free-page count × page size. Zero total, invalid page size, or an unavailable native query leaves memory unavailable.
+- Disk uses cumulative `IOBlockStorageDriver` `Statistics` values (`Bytes (Read)` and `Bytes (Write)`). Network uses cumulative bytes on active non-loopback interfaces.
+- Disk and network rates are counter deltas divided by the actual elapsed seconds. Each metric independently remains `None` if its source is missing, the interval is zero, or its counter moves backwards. Every accepted raw sample becomes the next baseline, including a missing or reset source.
+- The history is capped at 60 points and 60 seconds. Missing values remain `None`; trend drawing leaves a gap across unavailable points.
+- The UI labels unavailable values `不可用`; it must not format absent or invalid values as zero.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| First CPU/disk/network sample | Show unavailable while storing the counter baseline. |
+| Missing native source or failed read | Keep only the affected metrics unavailable; do not substitute zero. |
+| Zero or invalid interval | Do not calculate CPU utilization or byte rates. |
+| Counter decreases | Leave that metric unavailable and use the new sample as the next baseline. |
+| Memory total is zero or used exceeds total | Leave memory unavailable. |
+| Performance page closes, is disabled, or another page is selected | Stop sampling and stop its one-second repaint request. |
+| A trend point lacks a metric | Preserve a gap for that series. |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**: Two valid snapshots two seconds apart show the accumulated byte delta divided by two, while each trend series has its own valid points.
+- **Base**: On opening the page, CPU and cumulative byte rates are unavailable until a second sample; memory can display as soon as its absolute counters are valid.
+- **Bad**: A missing disk counter is rendered as `0 B/s`, or a line bridges a missing sample as if it were measured. Both hide unavailable data and are forbidden.
+
+### 6. Tests Required
+
+- `cumulative_counter_deltas_use_the_actual_sampling_interval`: assert CPU percentage and read/write/network rates from known deltas and elapsed seconds.
+- `first_samples_missing_sources_and_counter_resets_remain_unavailable`: assert no fabricated values and baseline recovery after missing/reset counters.
+- `invalid_cpu_deltas_and_memory_values_are_not_fabricated`: assert zero CPU total delta and invalid memory totals remain unavailable.
+- `cpu_and_rate_values_need_a_positive_sampling_interval`: assert same-instant samples produce no CPU percentage or byte rate.
+- `trend_keeps_unavailable_gaps_and_only_retains_about_one_minute`: assert gaps are kept and history remains bounded.
+- `performance_page_configuration_migrates_old_lengths_and_round_trips_eleven_entries`, `macos_first_release_exposes_only_local_core_pages`, and settings-tab mapping tests assert page IDs, platform gating, and config compatibility.
+- `cargo check --release --target aarch64-apple-darwin --lib` validates the Apple Silicon native API bindings.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let rate = current.unwrap_or_default().saturating_sub(previous) as f64 / seconds;
+```
+
+This turns a missing counter or reset into a plausible zero rate.
+
+#### Correct
+
+```rust
+let rate = current.checked_sub(previous)? as f64 / seconds;
+```
+
+Propagate unavailable data through `Option` so the card and trend can show a gap.

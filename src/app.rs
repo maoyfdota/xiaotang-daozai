@@ -892,6 +892,7 @@ pub struct App {
     /// 管理数据独立于提醒开关，每个新快照都更新。
     pub bluetooth: crate::bt::Snapshot,
     pub(crate) bluetooth_ui: crate::bluetooth_ui::State,
+    pub(crate) performance: crate::performance::Sampler,
     /// 每台设备最后一次明确的连接状态，用来比较连接变化。
     pub(crate) bt_shown: Vec<crate::bt::Device>,
     bt_initialized: bool,
@@ -1044,6 +1045,7 @@ impl App {
             music_restart_at: None,
             bluetooth: crate::bt::Snapshot::default(),
             bluetooth_ui: Default::default(),
+            performance: Default::default(),
             bt_version: None,
             bt_low_battery,
             bt_alert_store,
@@ -1967,6 +1969,13 @@ impl App {
         let mut cmds = Vec::new();
 
         self.tick(env, dt, elapsed);
+        if self.open && self.page == PERFORMANCE_PAGE && self.module_on(PERFORMANCE_PAGE) {
+            let now = std::time::Instant::now();
+            if self.performance.due(now) {
+                self.performance.ingest(now, crate::performance::collect());
+            }
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
         self.sync_device(env);
         self.tick_alerts();
         let hud_active=self.notice.clone();

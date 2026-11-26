@@ -5,7 +5,7 @@
 3. [x] 实现 macOS CPU、内存、磁盘和网络采样及采样历史；逐项让测试转绿。
 4. [x] 接入页面与设置入口，绘制四类指标卡和约一分钟趋势，保持蓝牙 ID 9／15。
 5. [x] 更新 macOS 平台规范和父任务进度。
-6. [ ] 运行定向测试、配置回归及 arm64 release 构建（已通过，宽泛 settings/page 测试的未归因失败详见 progress.md），完成提交并显式推送 `private/my_feature_1123`。
+6. [x] 运行定向测试、配置回归及 arm64 release 构建；提交 `394aa48` 并显式推送 `private/my_feature_1123`。宽泛 settings/page 测试的未归因失败详见 progress.md。
 
 ## 验证命令
 

@@ -1700,7 +1700,7 @@ impl App {
                     SETTINGS_TAB_PERFORMANCE=>{
                         self.settings_feature_header(ui,crate::app::PERFORMANCE_PAGE,"CPU、内存、磁盘与网络状态",|_,_|{});
                         settings_card(ui,|ui|{
-                            ui.label(egui::RichText::new("性能采样与趋势页面正在接入。打开性能页后可查看系统指标。")
+                            ui.label(egui::RichText::new("仅在打开性能页时采样，可查看 CPU、内存、磁盘与网络的近期趋势。")
                                 .size(12.0).color(settings_color(ctx,Color32::from_gray(185),Color32::from_gray(75))));
                         });
                     }

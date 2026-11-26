@@ -204,10 +204,12 @@ mod tests {
             busy: 100,
             total: 200,
         });
-        assert!(sampler
-            .ingest(start, baseline)
-            .disk_read_bytes_per_sec
-            .is_none());
+        assert!(
+            sampler
+                .ingest(start, baseline)
+                .disk_read_bytes_per_sec
+                .is_none()
+        );
 
         let mut current = raw(70, 300, 600, 2_000, 6_000);
         current.cpu = Some(CpuCounters {

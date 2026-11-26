@@ -1,7 +1,7 @@
 //! macOS 系统累计计数器读取。调用失败时只返回对应指标的 `None`。
 
 use super::{ByteCounters, CpuCounters, MemoryCounters, RawSample};
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::mem::{size_of, zeroed};
 use std::ptr;
 

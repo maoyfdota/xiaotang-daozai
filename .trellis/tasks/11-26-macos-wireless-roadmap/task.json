@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "11-26-macos-performance-page"
+  ],
   "parent": null,
   "relatedFiles": [
     "prd.md",
@@ -27,6 +29,6 @@
     "progress.md",
     "validation.md"
   ],
-  "notes": "User authorized implementation on current branch, Mac only, Chinese commits per completed part, push to private/my_feature_1123 and update progress. No subagents or branch merges. Bluetooth first; 2.4G deferred.",
+  "notes": "User authorized implementation on current branch, Mac only, Chinese commits per completed part, push to private/my_feature_1123 and update progress. One subagent is authorized; do not merge branches. Bluetooth first; 2.4G deferred.",
   "meta": {}
 }

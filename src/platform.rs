@@ -2,11 +2,11 @@
 
 /// Whether a page is available in the current platform build.
 pub const fn page_available(page: usize) -> bool {
-    if page >= 10 {
+    if page >= 11 {
         return false;
     }
     if cfg!(target_os = "macos") {
-        matches!(page, 1 | 2 | 4 | 8 | 9)
+        matches!(page, 1 | 2 | 4 | 8 | 9 | 10)
     } else {
         page < 9
     }
@@ -66,6 +66,7 @@ pub const fn settings_tab_available(tab: usize) -> bool {
         11 => Some(6),
         12 => Some(8),
         15 => Some(9),
+        16 => Some(10),
         _ => None,
     };
     match page {
@@ -81,7 +82,7 @@ mod tests {
     #[test]
     fn macos_first_release_exposes_only_local_core_pages() {
         if cfg!(target_os = "macos") {
-            assert_eq!((0..10).filter(|page| page_available(*page)).collect::<Vec<_>>(), [1, 2, 4, 8, 9]);
+            assert_eq!((0..11).filter(|page| page_available(*page)).collect::<Vec<_>>(), [1, 2, 4, 8, 9, 10]);
             assert!(!qweather_available());
             assert!(local_reminder_settings_available());
             assert!(!system_status_available());
@@ -92,6 +93,8 @@ mod tests {
             assert!(!settings_tab_available(7));
             assert!(!settings_tab_available(8));
             assert!(!settings_tab_available(11));
+            assert!(settings_tab_available(15));
+            assert!(settings_tab_available(16));
             assert!(!notification_controls_available());
             assert!(!foreground_avoidance_available());
             assert!(!renderer_compatibility_available());
@@ -110,6 +113,7 @@ mod tests {
             assert_eq!(diagnostics_collection_available(),cfg!(windows));
         }
         assert_eq!(page_available(9),cfg!(target_os="macos"));
-        assert!(!page_available(10));
+        assert_eq!(page_available(10),cfg!(target_os="macos"));
+        assert!(!page_available(11));
     }
 }

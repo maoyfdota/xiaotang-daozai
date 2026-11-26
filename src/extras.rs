@@ -858,12 +858,18 @@ mod tests {
 
     #[test]
     fn settings_groups_keep_every_page_reachable() {
-        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "无线设备"];
+        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "蓝牙", "性能"];
         for (tab, expected) in groups.iter().enumerate() {
             let matches: Vec<_> = SETTINGS_GROUPS.iter().filter(|(_,start,end,_)| (*start..=*end).contains(&tab)).collect();
             assert_eq!(matches.len(), 1, "页面 {tab} 必须且只能属于一个分组");
             assert_eq!(matches[0].0, *expected);
         }
+        assert_eq!(settings_tab_module(15),Some(crate::app::BLUETOOTH_PAGE));
+        assert_eq!(settings_tab_module(16),Some(crate::app::PERFORMANCE_PAGE));
+        assert_eq!(crate::app::PERFORMANCE_PAGE,10);
+        assert_eq!(crate::app::PAGE_NAMES.len(),11);
+        assert_eq!(crate::app::PAGE_SETTINGS_TABS[crate::app::BLUETOOTH_PAGE],15);
+        assert_eq!(crate::app::PAGE_SETTINGS_TABS[crate::app::PERFORMANCE_PAGE],16);
     }
 
     #[test]
@@ -1390,6 +1396,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
         QUOTA_PAGE=>("quota",include_bytes!("../assets/settings-icons/system/quota.svg")),
         CALENDAR_PAGE=>("calendar",include_bytes!("../assets/settings-icons/system/calendar.svg")),
         BLUETOOTH_PAGE=>("bluetooth",include_bytes!("../assets/device-icons/bluetooth-linear.svg")),
+        PERFORMANCE_PAGE=>("performance",include_bytes!("../assets/settings-icons/system/performance.svg")),
         _=>("weather",include_bytes!("../assets/settings-icons/system/weather.svg")),
     };
     egui::ImageSource::Bytes{uri:format!("bytes://settings-header-{name}.svg").into(),bytes:bytes.into()}
@@ -1399,7 +1406,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
 #[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(BLUETOOTH_PAGE),_=>None}
+    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(BLUETOOTH_PAGE),16=>Some(PERFORMANCE_PAGE),_=>None}
 }
 
 pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
@@ -1532,11 +1539,12 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
 /// 设置页分页序号。旧序号保持不变（岛上入口、测试都按序号跳转），新增外观与位置两页。
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
+pub(crate) const SETTINGS_TAB_PERFORMANCE: usize = 16;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);14] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);15] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
-    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("无线设备",15,15,""),
+    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("蓝牙",15,15,""), ("性能",SETTINGS_TAB_PERFORMANCE,SETTINGS_TAB_PERFORMANCE,""),
     ("关于",9,9,""),
 ];
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
@@ -1651,6 +1659,7 @@ impl App {
                         6=>egui::include_image!("../assets/settings-icons/system/notifications.svg"),
                         12=>egui::include_image!("../assets/settings-icons/system/weather.svg"),
                         15=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
+                        SETTINGS_TAB_PERFORMANCE=>egui::include_image!("../assets/settings-icons/system/performance.svg"),
                         7=>egui::include_image!("../assets/settings-icons/system/mail.svg"),
                         8=>egui::include_image!("../assets/settings-icons/system/calendar.svg"),
                         SETTINGS_TAB_APPEARANCE=>egui::include_image!("../assets/settings-icons/system/appearance.svg"),
@@ -1688,6 +1697,13 @@ impl App {
                             if let Some(message)=&self.bluetooth_ui.message {ui.label(message);}
                         });
                     }
+                    SETTINGS_TAB_PERFORMANCE=>{
+                        self.settings_feature_header(ui,crate::app::PERFORMANCE_PAGE,"CPU、内存、磁盘与网络状态",|_,_|{});
+                        settings_card(ui,|ui|{
+                            ui.label(egui::RichText::new("性能采样与趋势页面正在接入。打开性能页后可查看系统指标。")
+                                .size(12.0).color(settings_color(ctx,Color32::from_gray(185),Color32::from_gray(75))));
+                        });
+                    }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1721,7 +1737,7 @@ impl App {
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","已配对设备、连接状态与电量"];
+                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","已配对设备、连接状态与电量","CPU、内存、磁盘与网络状态"];
                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序。隐藏蓝牙页后设备状态持续更新，提醒由各自开关控制。其他功能关闭后停止后台同步与提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);

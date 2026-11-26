@@ -235,8 +235,8 @@ fn bluetooth_page_migration_preserves_old_permutations_and_switches() {
     let path = crate::model::config_dir().join("settings.txt");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     for (old, expected) in [
-        ("7,6,5,4,3,2,1,0", [7, 6, 5, 4, 3, 2, 1, 0, 8, 9]),
-        ("8,7,6,5,4,3,2,1,0", [8, 7, 6, 5, 4, 3, 2, 1, 0, 9]),
+        ("7,6,5,4,3,2,1,0", [7, 6, 5, 4, 3, 2, 1, 0, 8, 9, 10]),
+        ("8,7,6,5,4,3,2,1,0", [8, 7, 6, 5, 4, 3, 2, 1, 0, 9, 10]),
     ] {
         std::fs::write(
             &path,
@@ -244,16 +244,48 @@ fn bluetooth_page_migration_preserves_old_permutations_and_switches() {
         )
         .unwrap();
         let settings = crate::model::Settings::load();
-        assert_eq!(settings.page_order, expected);
+        assert_eq!(settings.page_order.as_slice(), expected.as_slice());
         assert_eq!(
             &settings.visible_pages[..9],
             &[true, false, true, false, true, false, true, false, true]
         );
         assert!(settings.visible_pages[9]);
+        assert_eq!(settings.visible_pages.get(10).copied(), Some(true));
         assert!(!settings.bluetooth_notifications);
         settings.save();
-        assert_eq!(crate::model::Settings::load().page_order, expected);
+        assert_eq!(crate::model::Settings::load().page_order.as_slice(), expected.as_slice());
     }
+    drop(h);
+}
+
+#[test]
+fn performance_page_configuration_migrates_old_lengths_and_round_trips_eleven_entries() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let h = H::new();
+    let path = crate::model::config_dir().join("settings.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for (order, visible, expected_order) in [
+        ("7,6,5,4,3,2,1,0", "00100000", vec![7,6,5,4,3,2,1,0,8,9,10]),
+        ("8,7,6,5,4,3,2,1,0", "001000000", vec![8,7,6,5,4,3,2,1,0,9,10]),
+        ("9,8,7,6,5,4,3,2,1,0", "0010000000", vec![9,8,7,6,5,4,3,2,1,0,10]),
+    ] {
+        std::fs::write(&path, format!("page_order={order}\nvisible_pages={visible}\n")).unwrap();
+        let settings = crate::model::Settings::load();
+        assert_eq!(settings.page_order.as_slice(), expected_order.as_slice());
+        assert_eq!(&settings.visible_pages[..visible.len()], &visible.bytes().map(|b| b == b'1').collect::<Vec<_>>());
+        assert_eq!(settings.visible_pages.get(10).copied(), Some(true), "旧配置缺少的性能页默认可见");
+    }
+
+    let order = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+    let visible = [false, true, false, true, false, true, false, true, false, true, true];
+    std::fs::write(&path, "page_order=10,9,8,7,6,5,4,3,2,1,0\nvisible_pages=01010101011\n").unwrap();
+    let settings = crate::model::Settings::load();
+    assert_eq!(settings.page_order.as_slice(), order.as_slice());
+    assert_eq!(settings.visible_pages.as_slice(), visible.as_slice());
+    settings.save();
+    let reloaded = crate::model::Settings::load();
+    assert_eq!(reloaded.page_order.as_slice(), order.as_slice());
+    assert_eq!(reloaded.visible_pages.as_slice(), visible.as_slice());
     drop(h);
 }
 

@@ -35,9 +35,11 @@ pub const QUOTA_PAGE: usize = 6;
 pub const CALENDAR_PAGE: usize = 7;
 pub const WEATHER_PAGE: usize = 8;
 pub const BLUETOOTH_PAGE: usize = 9;
+pub const PERFORMANCE_PAGE: usize = 10;
 pub(crate) const BLUETOOTH_H: f32 = 248.0;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
+pub(crate) const PERFORMANCE_H: f32 = 232.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
 pub const BAR_H: f32 = 30.0; // 收起药丸高
 pub(crate) const HUD_W: f32 = 260.0;
@@ -80,8 +82,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 10] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "无线设备"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,15];
+pub(crate) const PAGE_NAMES: [&str; 11] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "蓝牙", "性能"];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; 11] = [1,2,3,5,4,7,11,8,12,15,16];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -754,7 +756,7 @@ pub struct App {
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 10],
+    dots: [Spring; 11],
     wheel_delta: f32,
     pub(crate) content_scroll: Option<(egui::Id, f32)>,
     wheel_at: f64,
@@ -1917,7 +1919,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==BLUETOOTH_PAGE {BLUETOOTH_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==BLUETOOTH_PAGE {BLUETOOTH_H}else if self.page==PERFORMANCE_PAGE {PERFORMANCE_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -3217,6 +3219,7 @@ impl App {
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
             8 => ("当地", "天气", theme::CYAN),
             BLUETOOTH_PAGE => ("无线设备", "", theme::BLUE),
+            PERFORMANCE_PAGE => ("性能", "", theme::CYAN),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -3228,7 +3231,7 @@ impl App {
     fn nav(&mut self, c: &Card) {
         let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.module_on(*page)).collect();
         if pages.len()<2 { return; }
-        let arrow_y=if matches!(self.page,6|8|BLUETOOTH_PAGE){88.0}else{68.0};
+        let arrow_y=if matches!(self.page,6|8|BLUETOOTH_PAGE|PERFORMANCE_PAGE){88.0}else{68.0};
         let l = c.hit(8.0, arrow_y-13.0, 26.0, 26.0, "nav-l");
         let r = c.hit(385.0, arrow_y-13.0, 26.0, 26.0, "nav-r");
         let (lh, lp) = c.hover_t(&l);
@@ -3276,6 +3279,7 @@ impl App {
             6 => self.page_quota(c),
             8 => self.page_weather(c,env,cmds),
             BLUETOOTH_PAGE => self.page_bluetooth(c,cmds),
+            PERFORMANCE_PAGE => self.page_performance(c),
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }

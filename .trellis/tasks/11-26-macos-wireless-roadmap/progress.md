@@ -16,6 +16,7 @@
 ## 检查记录
 
 - 11/26 可见性核对：当前分支已包含电量环／详情（`9019ca8`，17:32）和常驻组件（`4e0a538`，17:43）；运行中的 `/Applications/Daozai.app` 主程序修改时间为 11/25 21:12，早于上述提交，因此该安装版不会显示新界面。按既有实机验收记录保留安装包，未覆盖。常驻设置默认关闭，启用后才会显示。当前分支模拟预览：`/tmp/daozai-wireless-preview-2026-11-26/蓝牙样式预览.png`。
+- 11/26 安装核对：用户再次反馈缺少电量环与常驻后，确认旧 `/Applications/Daozai.app` 进程仍在运行。用当前分支重建 arm64 `0.6.66` `.app` 并更新原入口；旧包完整备份到 `~/Library/Application Support/Daozai/backups/Daozai-2026-11-25.app`。安装包与 release 二进制 SHA-256 均为 `8235948764a2e3eefc398a4f3bfc34287e62835b5635c38172ef3593f3c17b38`；应用标识 `com.renly1994.daozai`，已重启进程路径为 `/Applications/Daozai.app/Contents/MacOS/daozai`。未合并分支。
 - 可见性回归：`cargo test --lib bluetooth -- --test-threads=1` 30 项通过、1 项忽略；`cargo test --bin daozai bluetooth_settings_tests -- --test-threads=1` 1 项通过。预览与测试使用模拟设备数据，不代表实机电量报告。
 - W1：bt 模块 15 项单元测试通过，覆盖有效期、失败保留、重连、授权映射及原控制／低电量逻辑。
 - W1 提交 0fcb644（完善蓝牙电量时效与刷新）已推送 private/my_feature_1123。
@@ -25,7 +26,7 @@
 - 扩大 resident 测试存在 10 个失败，已在 9019ca8 的独立临时源码副本复现相同 10 个失败；本次新增项通过。详见 validation.md。
 - 已安装包标识为 com.renly1994.daozai，包含 NSBluetoothAlwaysUsageDescription。仅只读核对，没有重置权限或操作实体设备。
 - 构建存在仓库原有的依赖及未使用代码警告；未为本次功能进行无关清理。
-- 保留当前安装应用，不做跨分支验收集成或替换；后续实机验收只需覆盖新增界面／常驻和未收敛的权限问题。
+- 当前安装应用已更新，旧应用包留有备份；不做跨分支验收集成或合并。后续实机验收只需覆盖新增界面／常驻和未收敛的权限问题。
 
 ## 后续路线
 

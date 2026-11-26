@@ -1,0 +1,30 @@
+{
+  "id": "macos-wireless-roadmap",
+  "name": "macos-wireless-roadmap",
+  "title": "macOS 后续适配路线与无线设备改造计划",
+  "description": "根据 origin/main 与 private/my_feature_1123 的功能差异规划后续 Mac 适配，以无线设备改造优先；排除插件集市、插件扩展、邮件、AI 额度和音乐兼容。本任务仅保存计划，不开始实现或进行分支合并。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "maoyf",
+  "assignee": "maoyf",
+  "createdAt": "2026-11-26",
+  "completedAt": null,
+  "branch": "my_feature_1123",
+  "base_branch": "my_feature_1123",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "prd.md",
+    "design.md",
+    "implement.md"
+  ],
+  "notes": "User authorized implementation on current branch, Mac only, Chinese commits per completed part, push to private/my_feature_1123 and update progress. No subagents or branch merges. Bluetooth first; 2.4G deferred.",
+  "meta": {}
+}

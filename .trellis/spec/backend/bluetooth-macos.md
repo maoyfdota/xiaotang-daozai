@@ -72,3 +72,10 @@ if pending.request.id == result.request.id && target_reached(&snapshot, &pending
 ```
 
 Hardware capabilities and system-cache freshness are recorded limits, not guarantees inferred from unit tests.
+
+## Battery observation extension (2026-11-26)
+
+- Mac battery readings carry a SystemReport source and successful query completion time; this is not a device measurement timestamp.
+- Values expire after 90 seconds, including a snapshot retained by the UI without new service events. Failed queries may retain the previous value/time for history but cannot drive alerts.
+- A manual refresh also requests a battery report, subject to a five-second minimum request interval and one in-flight report. Background refresh remains 60 seconds.
+- Unknown native authorization values are unavailable states, not proof that the user denied permission. The installed-bundle permission discrepancy remains a hardware validation item.

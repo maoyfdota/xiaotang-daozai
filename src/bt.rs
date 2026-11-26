@@ -16,6 +16,9 @@ pub struct Device {
     pub battery_status: BatteryStatus,
     /// 同一次读取跨帧复用序号；只有 Valid 读数可以驱动低电量周期。
     pub battery_observation: u64,
+    /// 查询成功完成的时刻，不代表设备内部采样时刻。
+    pub battery_read_at: Option<Instant>,
+    pub battery_source: Option<BatterySource>,
     pub connect: Capability,
     pub disconnect: Capability,
     /// 系统接口与实体身份的关联，供跨来源合并和电量匹配使用。
@@ -63,10 +66,19 @@ pub enum ConnectionState {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BatteryStatus {
     Valid,
+    Stale,
     #[default]
     Unknown,
     Failed,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatterySource {
+    SystemReport,
+}
+
+/// 系统报告每 60 秒读取一次，允许一次 15 秒查询及调度余量。
+pub const BATTERY_MAX_AGE: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Capability {
@@ -182,7 +194,11 @@ fn device_kind(name: &str, classic: bool, class: Option<u32>) -> DeviceKind {
 impl Device {
     /// 通知条正文：`名称 · 电量 80%`，设备没上报电量时只写名称。
     pub fn valid_battery(&self) -> Option<u8> {
-        self.battery.filter(|level| self.battery_status == BatteryStatus::Valid && *level <= 100)
+        self.valid_battery_at(Instant::now())
+    }
+    pub fn valid_battery_at(&self, now: Instant) -> Option<u8> {
+        self.battery.filter(|level| self.battery_status == BatteryStatus::Valid && *level <= 100
+            && self.battery_read_at.is_none_or(|at| now.saturating_duration_since(at) < BATTERY_MAX_AGE))
     }
     pub fn summary(&self) -> String {
         match self.battery {

@@ -36,7 +36,7 @@ impl Drop for Service {
 pub fn spawn() -> Service {
     let mut adapter = super::macos::Adapter::new();
     spawn_with(
-        move || adapter.query(),
+        move |refresh| adapter.query(refresh),
         super::macos::control,
         OPERATION_TIMEOUT,
     )
@@ -92,7 +92,7 @@ fn validate(snapshot: &Snapshot, request: &Request) -> Result<(), String> {
 }
 
 fn spawn_with(
-    mut query: impl FnMut() -> Snapshot + Send + 'static,
+    mut query: impl FnMut(bool) -> Snapshot + Send + 'static,
     control: impl Fn(Request) -> Result<(), String> + Send + 'static,
     timeout: Duration,
 ) -> Service {
@@ -105,15 +105,16 @@ fn spawn_with(
     let query_spawn = std::thread::Builder::new()
         .name("daozai-bt-observe".into())
         .spawn(move || {
+            let mut force = true;
             while !query_stop.load(Ordering::Relaxed) {
-                let snapshot = query();
+                let snapshot = query(force);
                 if query_stop.load(Ordering::Relaxed) || observed.send(snapshot).is_err() {
                     break;
                 }
-                if refresh_rx.recv_timeout(Duration::from_secs(2))
-                    == Err(mpsc::RecvTimeoutError::Disconnected)
-                {
-                    break;
+                match refresh_rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(()) => force = true,
+                    Err(mpsc::RecvTimeoutError::Timeout) => force = false,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         });
@@ -299,7 +300,7 @@ mod tests {
         let count = calls.clone();
         let gate = std::sync::Mutex::new(wait);
         let service = spawn_with(
-            snapshot,
+            |_| snapshot(),
             move |_| {
                 count.fetch_add(1, Ordering::Relaxed);
                 let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(2));

@@ -2,7 +2,7 @@
 // objc 0.2 macros inspect the obsolete cargo-clippy cfg in the calling crate.
 #![allow(unexpected_cfgs)]
 use super::{
-    device_kind, normalize_address, Action, BatteryStatus, Capability, ConnectionState, Device,
+    device_kind, normalize_address, Action, BatterySource, BatteryStatus, Capability, ConnectionState, Device,
     Endpoint, Request, ScanStatus, Snapshot,
 };
 use objc::runtime::{Object, BOOL, YES};
@@ -53,7 +53,10 @@ fn authorization() -> i64 {
     unsafe { msg_send![class!(CBManager), authorization] }
 }
 fn permission() -> Result<(), ScanStatus> {
-    match authorization() {
+    permission_for(authorization())
+}
+fn permission_for(status: i64) -> Result<(), ScanStatus> {
+    match status {
         3 => Ok(()),
         0 => Err(ScanStatus::PermissionRequired(
             "需要允许岛仔访问蓝牙，请点击「允许访问蓝牙」".into(),
@@ -61,9 +64,10 @@ fn permission() -> Result<(), ScanStatus> {
         1 => Err(ScanStatus::PermissionRequired(
             "系统限制了蓝牙访问，请检查隐私设置".into(),
         )),
-        _ => Err(ScanStatus::PermissionRequired(
-            "蓝牙权限已关闭，请在系统设置中允许岛仔访问蓝牙".into(),
+        2 => Err(ScanStatus::PermissionRequired(
+            "系统未授予当前岛仔蓝牙权限。请在隐私设置中允许访问；若开关已开启，请退出后从安装的 Daozai.app 重新打开".into(),
         )),
+        _ => Err(ScanStatus::Unavailable(format!("系统返回未知蓝牙权限状态（{status}），请重新打开应用后重试"))),
     }
 }
 
@@ -237,6 +241,45 @@ pub(super) fn control(request: Request) -> Result<(), String> {
 struct Report {
     levels: BTreeMap<String, u8>,
 }
+struct ReportRead {
+    started: Instant,
+    completed: Instant,
+    result: Result<Report, String>,
+}
+
+fn apply_battery(
+    device: &mut Device,
+    previous: Option<&Device>,
+    connected_at: Option<Instant>,
+    read: Option<&ReportRead>,
+    sequence: u64,
+    now: Instant,
+) {
+    if device.connection != ConnectionState::Connected { return; }
+    let Some(read) = read.filter(|read| connected_at.is_none_or(|at| read.started >= at)) else { return; };
+    device.battery_observation = sequence;
+    match &read.result {
+        Ok(report) => {
+            device.battery = report.levels.get(&device.id).copied();
+            if device.battery.is_some() {
+                device.battery_source = Some(BatterySource::SystemReport);
+                device.battery_read_at = Some(read.completed);
+                device.battery_status = if now.saturating_duration_since(read.completed) < super::BATTERY_MAX_AGE {
+                    BatteryStatus::Valid
+                } else { BatteryStatus::Stale };
+            }
+        }
+        Err(_) => {
+            // 失败保留上次成功读数供详情查看，但不作为有效值触发提醒。
+            if let Some(old) = previous.filter(|old| old.connection == ConnectionState::Connected) {
+                device.battery = old.battery;
+                device.battery_source = old.battery_source;
+                device.battery_read_at = old.battery_read_at;
+            }
+            device.battery_status = BatteryStatus::Failed;
+        }
+    }
+}
 fn parse_report(bytes: &[u8]) -> Result<Report, String> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| "系统蓝牙报告格式无效".to_owned())?;
@@ -323,8 +366,8 @@ fn read_report() -> Result<Report, String> {
 pub(super) struct Adapter {
     previous: Vec<Device>,
     request: mpsc::SyncSender<Instant>,
-    results: mpsc::Receiver<(Instant, Result<Report, String>)>,
-    report: Option<(Instant, Result<Report, String>)>,
+    results: mpsc::Receiver<ReportRead>,
+    report: Option<ReportRead>,
     connected_at: BTreeMap<String, Instant>,
     requested: Option<Instant>,
     reading: bool,
@@ -344,7 +387,7 @@ impl Adapter {
                     } else {
                         Err("蓝牙权限不可用".into())
                     };
-                    if send.send((started, report)).is_err() {
+                    if send.send(ReportRead { started, completed: Instant::now(), result: report }).is_err() {
                         break;
                     }
                 }
@@ -360,7 +403,7 @@ impl Adapter {
             sequence: 0,
         }
     }
-    pub(super) fn query(&mut self) -> Snapshot {
+    pub(super) fn query(&mut self, refresh: bool) -> Snapshot {
         let mut devices = match native_devices() {
             Ok(devices) => devices,
             Err(status) => {
@@ -402,7 +445,7 @@ impl Adapter {
                 .filter(|d| d.connection == ConnectionState::Connected)
                 .map(|d| &d.id));
         if !self.reading
-            && (changed
+            && (changed || refresh && self.requested.is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
                 || self
                     .requested
                     .is_none_or(|t| t.elapsed() >= Duration::from_secs(60)))
@@ -412,33 +455,12 @@ impl Adapter {
             self.requested = Some(Instant::now());
         }
         for device in &mut devices {
-            if device.connection != ConnectionState::Connected {
-                continue;
-            }
-            if !self.report.as_ref().is_some_and(|(started, _)| {
-                self.connected_at
-                    .get(&device.id)
-                    .is_none_or(|at| started >= at)
-            }) {
-                // A new connection must wait for a post-connection observation.
-                continue;
-            }
-            device.battery_observation = self.sequence;
-            match &self.report {
-                Some((_, Ok(report))) => {
-                    device.battery = report.levels.get(&device.id).copied();
-                    device.battery_status = if device.battery.is_some() {
-                        BatteryStatus::Valid
-                    } else {
-                        BatteryStatus::Unknown
-                    };
-                }
-                Some((_, Err(_))) => device.battery_status = BatteryStatus::Failed,
-                None => {}
-            }
+            let previous = self.previous.iter().find(|old| old.id == device.id);
+            let connected_at = self.connected_at.get(&device.id).copied();
+            apply_battery(device, previous, connected_at, self.report.as_ref(), self.sequence, Instant::now());
         }
         let status = match &self.report {
-            Some((_, Err(reason))) => ScanStatus::Partial(format!("设备状态可用；{reason}")),
+            Some(ReportRead { result: Err(reason), .. }) => ScanStatus::Partial(format!("设备状态可用；{reason}")),
             // pairedDevices is authoritative for this native source. Battery errors
             // remain partial, and denied/unavailable sources never imply removal.
             _ => ScanStatus::Ready,
@@ -455,6 +477,44 @@ impl Adapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn permission_states_do_not_mislabel_unknown_values_as_denial() {
+        assert!(permission_for(3).is_ok());
+        for status in [0, 1, 2] {
+            assert!(matches!(permission_for(status), Err(ScanStatus::PermissionRequired(_))));
+        }
+        assert!(matches!(permission_for(4), Err(ScanStatus::Unavailable(_))));
+    }
+
+    #[test]
+    fn battery_observations_expire_and_failed_reads_keep_only_history() {
+        let now = Instant::now();
+        let read = ReportRead { started: now, completed: now, result: Ok(Report {
+            levels: [("A".into(), 0)].into_iter().collect(),
+        }) };
+        let base = Device { id: "A".into(), connection: ConnectionState::Connected, ..Default::default() };
+        let mut fresh = base.clone();
+        apply_battery(&mut fresh, None, Some(now), Some(&read), 1, now);
+        assert_eq!(fresh.valid_battery_at(now), Some(0));
+        assert_eq!(fresh.battery_source, Some(BatterySource::SystemReport));
+        assert_eq!(fresh.battery_read_at, Some(now));
+        let expired = now + super::super::BATTERY_MAX_AGE;
+        assert_eq!(fresh.valid_battery_at(expired), None, "UI stops using a cached snapshot without needing another event");
+        let mut stale = base.clone();
+        apply_battery(&mut stale, Some(&fresh), Some(now), Some(&read), 1, expired);
+        assert_eq!(stale.battery_status, BatteryStatus::Stale);
+        assert_eq!(stale.battery, Some(0));
+        let failed = ReportRead { started: expired, completed: expired, result: Err("timeout".into()) };
+        let mut value = base.clone();
+        apply_battery(&mut value, Some(&fresh), Some(now), Some(&failed), 2, expired);
+        assert_eq!(value.battery, Some(0));
+        assert_eq!(value.battery_read_at, Some(now), "failed query must not refresh the last successful timestamp");
+        assert_eq!(value.valid_battery_at(expired), None);
+        let mut reconnected = base;
+        apply_battery(&mut reconnected, Some(&fresh), Some(now + Duration::from_secs(1)), Some(&read), 1, expired);
+        assert_eq!(reconnected.battery, None, "pre-reconnection reports cannot supply a new observation");
+    }
+
     #[test]
     fn occupied_control_slot_rejects_a_later_service_generation() {
         let _previous = CONTROL.lock().unwrap();

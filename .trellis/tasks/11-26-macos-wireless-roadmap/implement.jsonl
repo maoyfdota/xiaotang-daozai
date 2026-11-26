@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/bluetooth-macos.md", "reason": "Bluetooth native, identity, reminder and configuration contracts"}
+{"file": ".trellis/spec/backend/macos-platform.md", "reason": "Mac layout, persistence and bundle contracts"}

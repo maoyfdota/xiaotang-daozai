@@ -60,7 +60,7 @@ impl App {
                     }
                 }
             } else {
-                ui.weak("自动显示已连接且电量有效的设备，电量较低的优先，最多两台。");
+                ui.weak("自动优先显示有电量的已连接设备；不足两台时补充电量未知的已连接设备。");
             }
         });
     }
@@ -82,8 +82,17 @@ impl App {
         } else {
             let now = std::time::Instant::now();
             let mut devices: Vec<_> = self.bluetooth.devices.iter()
-                .filter(|d| d.connection == ConnectionState::Connected && d.valid_battery_at(now).is_some()).cloned().collect();
-            devices.sort_by(|a, b| a.valid_battery_at(now).cmp(&b.valid_battery_at(now)).then_with(|| a.id.cmp(&b.id)));
+                .filter(|d| d.connection == ConnectionState::Connected).cloned().collect();
+            // Prefer known battery levels, but fill unused slots with connected devices whose battery is unknown.
+            devices.sort_by(|a, b| {
+                let a_battery = a.valid_battery_at(now);
+                let b_battery = b.valid_battery_at(now);
+                a_battery
+                    .is_none()
+                    .cmp(&b_battery.is_none())
+                    .then_with(|| a_battery.cmp(&b_battery))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
             devices.truncate(2);
             devices
         }

@@ -382,6 +382,29 @@ fn wireless_resident_selects_stable_lowest_values_and_preserves_custom_choices()
 }
 
 #[test]
+fn wireless_resident_auto_keeps_connected_devices_when_battery_is_unknown() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.settings.wireless_resident = true;
+    update(
+        &mut h,
+        1,
+        vec![
+            device("M240", DeviceKind::Mouse, ConnectionState::Connected, None, 1),
+            device("REDMI", DeviceKind::Headphones, ConnectionState::Connected, None, 1),
+        ],
+    );
+
+    let ids = h
+        .app
+        .wireless_resident_devices()
+        .into_iter()
+        .map(|device| device.id)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["M240", "REDMI"]);
+}
+
+#[test]
 fn wireless_side_resident_obeys_order_and_opens_device_detail() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = H::new();
